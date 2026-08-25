@@ -122,32 +122,45 @@ state information concentrates.
 First recovery results, 8 simulated markets × 2,500 days — the speed/false-alarm frontier is
 already explicit, and no method is close to solved:
 
-| method | balanced acc. | ARI | Brier | median delay | detection rate | false alarms/yr |
-|---|---|---|---|---|---|---|
-| **`hmm_gaussian`** | **0.542** | **0.362** | **0.648** | 3.3d | 0.72 | 13.7 |
-| `ma_cross` | 0.430 | 0.058 | 0.735 | 23.4d | 0.33 | 2.8 |
-| `return_sign` | 0.426 | 0.046 | 0.723 | 12.0d | 0.80 | 20.9 |
-| `ewma_slope` | 0.421 | 0.031 | 0.734 | 3.3d | 0.95 | 33.7 |
-| `kalman_trend` (MLE) | 0.381 | 0.015 | 0.691 | 22.4d | 0.16 | 2.8 |
-| `always_range` (null) | 0.333 | 0.000 | 0.653 | — | 0.00 | 0.0 |
+| method | balanced acc. | ARI | Brier | label gap | median delay | detection rate | false alarms/yr |
+|---|---|---|---|---|---|---|---|
+| **`hmm_gaussian`** | **0.616** | 0.422 | **0.510** | 0.185 | 4.9d | 0.77 | 9.0 |
+| `ms_regression` | 0.610 | **0.431** | 0.521 | 0.324 | 3.0d | 0.79 | 21.9 |
+| `ma_cross` | 0.430 | 0.058 | 0.735 | 0.059 | 23.4d | 0.33 | 2.8 |
+| `return_sign` | 0.426 | 0.046 | 0.723 | 0.022 | 12.0d | 0.80 | 20.9 |
+| `ewma_slope` | 0.421 | 0.031 | 0.734 | 0.025 | 3.3d | 0.95 | 33.7 |
+| `kalman_trend` (MLE) | 0.381 | 0.015 | 0.691 | 0.005 | 22.4d | 0.16 | 2.8 |
+| `always_range` (null) | 0.333 | 0.000 | 0.653 | — | — | 0.00 | 0.0 |
 
-**The HMM is the first method to clearly earn its complexity** — and it wins on every axis at
-once: best discrimination (ARI 0.362, six times `ma_cross`), best calibration (the only method
-to beat the hedging null on Brier), and a strictly better speed/false-alarm frontier than
-`ewma_slope`, which matches its 3.3-day delay but pays 33.7 false alarms a year against 13.7.
+**The switching models decisively earn their complexity.** Both reach ~0.61 balanced accuracy
+against a 0.33 floor, with roughly seven times the ARI of the best baseline, and both beat the
+hedging null on calibration. When the truth switches, modelling switching beats modelling smooth
+drift — which also confirms the Kalman result was **misspecification, not implementation**: the
+local-linear-trend model was answering the wrong question, and its MLE faithfully optimised it.
 
-Two caveats keep it honest. This is a **home fixture**: the synthetic markets are generated from
-a Markov-switching process, so the HMM's assumptions hold exactly. Recovery is necessary, not
-sufficient, and the real test is real data where the generative process is not Gaussian
-Markov-switching. And **state recovery is much better than parameter recovery** — the fitted
-means overshoot the truth (−0.0029 vs −0.0010) and the up-state volatility is conflated
-(0.017 vs 0.009), so the filter identifies *when* regimes change far better than it measures
-*what* they are.
+**`label_gap` is the column that changed the design.** It is matched accuracy minus raw
+accuracy — how much of a method's score depends on *relabelling* its states. Cross-checking the
+hand-rolled HMM against statsmodels on the same model class exposed the problem: the two agreed
+on the partition (ARI 0.44 vs 0.45) but their MAP labels agreed only 27% of the time, below
+chance. Both were finding the right regimes and attaching the wrong semantics — and ARI, matched
+accuracy and Brier all hid it completely.
 
-Together the HMM and Kalman results tell one coherent story: when the truth switches, modelling
-switching beats modelling smooth drift. That confirms the Kalman result was **misspecification,
-not implementation** — the local-linear-trend model was answering the wrong question about this
-process, and its MLE dutifully optimised the wrong objective.
+The cause was ordering states by fitted mean. On some seeds EM lands on a higher-likelihood but
+degenerate solution where a rarely-occupied state captures a short quiet episode at an extreme
+mean (+0.5%/day at 0.3% vol), which scrambles the ordering. Rejecting fits whose stationary
+occupancy falls below 8% cut the HMM's label gap from ~0.35 to 0.185 and its false alarms from
+13.7 to 9.0/yr. `ms_regression` still carries a 0.324 gap and is the least label-reliable method
+in the table despite the best ARI.
+
+This matters practically, not just aesthetically: **anything consuming the labels literally — the
+per-ticker state report, which prints "up" — is only trustworthy when the label gap is small.**
+The transparent baselines have gaps of 0.02–0.06 because their semantics are hard-coded; the
+sophisticated methods buy partition quality at the cost of label reliability. `label_gap` is now
+reported on every run so that trade-off can never hide again.
+
+One caveat holds throughout: this is a **home fixture**. The synthetic markets are generated from
+a Markov-switching process, so the switching models' assumptions hold exactly. Recovery is
+necessary, not sufficient.
 
 Three further readings.
 

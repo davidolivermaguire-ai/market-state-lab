@@ -105,10 +105,17 @@ def recovery_metrics(pred: pd.DataFrame, true_state: pd.Series, horizon: int = 6
 
     delay, det_rate, fa = _detection(matched, true_idx, horizon=horizon)
 
+    matched_acc = float((matched == true_idx).mean())
     return {
         "n": int(len(df)),
         "accuracy": raw_acc,
-        "accuracy_matched": float((matched == true_idx).mean()),
+        "accuracy_matched": matched_acc,
+        # How much of the score depends on relabelling. Large gap = the method finds the
+        # right partition but attaches the wrong semantics to it ("up" is not up), which
+        # permutation-invariant metrics (ARI, matched accuracy) hide completely. Anything
+        # consuming the labels literally - like the per-ticker state report - is only
+        # trustworthy when this is small.
+        "label_gap": matched_acc - raw_acc,
         "balanced_accuracy": _balanced_accuracy(matched, true_idx),
         "ari": float(adjusted_rand_score(true_idx, pred_idx)),
         "brier": brier,

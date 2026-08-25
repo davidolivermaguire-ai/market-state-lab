@@ -71,7 +71,7 @@ def cmd_recovery(args: argparse.Namespace) -> int:
     print(f"recovery suite — {args.seeds} simulated markets x {args.n} days\n")
     per_seed, agg = run_recovery(methods=args.methods, seeds=seeds, n=args.n)
 
-    cols = ["method", "balanced_accuracy", "ari", "brier",
+    cols = ["method", "balanced_accuracy", "ari", "brier", "label_gap",
             "median_delay_days", "detection_rate", "false_alarms_per_year"]
     with pd.option_context("display.width", 140, "display.max_columns", 20):
         print(agg[cols].round(3).to_string(index=False))

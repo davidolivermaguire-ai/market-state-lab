@@ -37,6 +37,19 @@ _VAR_FLOOR = 1e-12
 _EPS = 1e-300
 
 
+def _occupancy(A: np.ndarray) -> np.ndarray:
+    """Stationary distribution of the transition matrix — long-run time in each state."""
+    try:
+        w, v = np.linalg.eig(A.T)
+        k = int(np.argmin(np.abs(w - 1.0)))
+        p = np.real(v[:, k])
+        p = np.abs(p)
+        s = p.sum()
+        return p / s if s > 0 else np.full(K, 1.0 / K)
+    except Exception:
+        return np.full(K, 1.0 / K)
+
+
 def _log_emissions(y: np.ndarray, mu: np.ndarray, var: np.ndarray) -> np.ndarray:
     """log N(y_t | mu_k, var_k) for every t, k."""
     d = y[:, None] - mu[None, :]
@@ -87,9 +100,21 @@ class GaussianHMM(StateEstimator):
 
     requires_fit = True
 
-    def __init__(self, n_iter: int = 40, tol: float = 1e-4, seed: int = 0):
-        super().__init__(n_iter=n_iter, tol=tol, seed=seed)
-        self.n_iter, self.tol, self.seed = n_iter, tol, seed
+    def __init__(self, n_iter: int = 120, tol: float = 1e-6, seed: int = 0, n_init: int = 6):
+        """
+        n_init : int
+            EM restarts. Baum-Welch converges to a *local* optimum, and a single
+            initialisation with equal starting variances reliably lands in a poor one
+            on regime data whose states differ mostly in volatility. Restarting from
+            varied means and variances and keeping the highest-likelihood solution is
+            what brings this implementation into agreement with statsmodels'
+            MarkovRegression on the same model class — the cross-check that validates
+            the hand-rolled EM.
+        """
+        super().__init__(n_iter=n_iter, tol=tol, seed=seed, n_init=n_init)
+        self.n_iter, self.tol, self.seed, self.n_init = n_iter, tol, seed, n_init
+        self.min_occupancy = 0.08
+        self.degenerate_ = False
         # defaults so filter() works before fit(): persistent regimes, ordered means
         self.mu_ = np.array([-1.0e-3, 0.0, 1.0e-3])
         self.var_ = np.array([4.0e-4, 6.4e-5, 1.0e-4])
@@ -104,15 +129,51 @@ class GaussianHMM(StateEstimator):
             return self
 
         rng = np.random.default_rng(self.seed)
-        # initialise on return quantiles: a sane, data-driven starting point
-        qs = np.quantile(y, [0.15, 0.5, 0.85])
-        mu = qs + rng.normal(0, 1e-5, K)
-        var = np.full(K, max(float(y.var()), _VAR_FLOOR))
-        A = np.full((K, K), 0.02) + np.eye(K) * 0.94
+        best = None      # best solution with all states non-degenerate
+        fallback = None  # best overall, used only if every solution is degenerate
+        for attempt in range(max(1, self.n_init)):
+            mu, var, A, pi, ll = self._em_once(y, rng, attempt)
+            if not np.isfinite(ll):
+                continue
+            if fallback is None or ll > fallback[-1]:
+                fallback = (mu, var, A, pi, ll)
+            # Reject degenerate fits: a state that occupies almost no time can capture a
+            # short quiet episode with an extreme mean, which scrambles mean-ordered
+            # labels even though the likelihood is higher. Interpretability of the state
+            # labels is a requirement here, not a nicety - the state report says "up".
+            if _occupancy(A).min() >= self.min_occupancy:
+                if best is None or ll > best[-1]:
+                    best = (mu, var, A, pi, ll)
+        chosen = best if best is not None else fallback
+        if chosen is None:
+            return self
+        mu, var, A, pi, _ = chosen
+        self.degenerate_ = best is None
+
+        # make labels semantic: sort states by fitted mean -> down, range, up
+        order = np.argsort(mu)
+        self.mu_, self.var_, self.pi_ = mu[order], var[order], pi[order]
+        self.A_ = A[np.ix_(order, order)]
+        self.A_ /= np.maximum(self.A_.sum(axis=1, keepdims=True), _EPS)
+        return self
+
+    def _em_once(self, y: np.ndarray, rng: np.random.Generator, attempt: int):
+        """One Baum-Welch run from a randomised start. Returns (mu, var, A, pi, loglik)."""
+        base_var = max(float(y.var()), _VAR_FLOOR)
+        if attempt == 0:
+            # data-driven start: quantile means, variances spread low/mid/high
+            mu = np.quantile(y, [0.15, 0.5, 0.85])
+            var = base_var * np.array([2.0, 0.5, 1.0])
+        else:
+            mu = np.quantile(y, np.sort(rng.uniform(0.05, 0.95, K)))
+            var = base_var * np.exp(rng.normal(0.0, 0.7, K))
+        var = np.maximum(var, _VAR_FLOOR)
+        diag = rng.uniform(0.90, 0.985)
+        A = np.full((K, K), (1.0 - diag) / (K - 1)) + np.eye(K) * (diag - (1.0 - diag) / (K - 1))
         A /= A.sum(axis=1, keepdims=True)
         pi = np.full(K, 1.0 / K)
 
-        prev = -np.inf
+        prev, ll = -np.inf, -np.inf
         for _ in range(self.n_iter):
             logB = _log_emissions(y, mu, var)
             alpha, c, ll = _forward(logB, A, pi)
@@ -141,12 +202,7 @@ class GaussianHMM(StateEstimator):
                 break
             prev = ll
 
-        # make labels semantic: sort states by fitted mean -> down, range, up
-        order = np.argsort(mu)
-        self.mu_, self.var_, self.pi_ = mu[order], var[order], pi[order]
-        self.A_ = A[np.ix_(order, order)]
-        self.A_ /= np.maximum(self.A_.sum(axis=1, keepdims=True), _EPS)
-        return self
+        return mu, var, A, pi, float(ll)
 
     # ------------------------------------------------------------- filter
     def filter(self, features: pd.DataFrame) -> pd.DataFrame:
