@@ -123,21 +123,30 @@ def run_recovery(
     seeds: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 7),
     n: int = 2500,
     persistence: float = 0.985,
+    train_frac: float = 0.4,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the recovery suite over several simulated markets.
 
-    Returns (per-seed rows, aggregate by method). Several seeds matter: a single
-    simulated market is one draw, and ranking methods on one draw is the mistake the
-    whole harness exists to avoid.
+    Estimators that learn are fitted on the first `train_frac` of each market and
+    scored on the remainder; stateless rules are scored on **the same held-out rows**,
+    so the comparison stays like-for-like. Several seeds matter: one simulated market
+    is one draw, and ranking methods on one draw is the mistake the harness exists to
+    avoid.
+
+    Returns (per-seed rows, aggregate by method).
     """
     methods = methods or list_estimators()
     rows = []
     for seed in seeds:
         px, true_state = make_regime_series(n=n, seed=seed, persistence=persistence)
         feats = build_features(px)
+        cut = int(len(feats) * train_frac)
         for name in methods:
-            out = get_estimator(name).filter(feats)
-            m = recovery_metrics(out, true_state)
+            est = get_estimator(name)
+            if est.requires_fit:
+                est.fit(feats.iloc[:cut])
+            out = est.filter(feats).iloc[cut:]
+            m = recovery_metrics(out, true_state.iloc[cut:])
             if m.get("n"):
                 rows.append({"method": name, "seed": seed, **m})
 

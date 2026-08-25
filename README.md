@@ -124,20 +124,37 @@ already explicit, and no method is close to solved:
 
 | method | balanced acc. | ARI | median delay | detection rate | false alarms/yr |
 |---|---|---|---|---|---|
-| `ma_cross` | 0.429 | 0.034 | 23.8d | 0.30 | 2.5 |
-| `return_sign` | 0.425 | 0.041 | 10.0d | 0.80 | 19.9 |
-| `ewma_slope` | 0.413 | 0.027 | 2.9d | 0.96 | 31.6 |
+| `ma_cross` | 0.430 | 0.058 | 23.4d | 0.33 | 2.8 |
+| `return_sign` | 0.426 | 0.046 | 12.0d | 0.80 | 20.9 |
+| `ewma_slope` | 0.421 | 0.031 | 3.3d | 0.95 | 33.7 |
+| `kalman_trend` (MLE) | 0.381 | 0.015 | 22.4d | 0.16 | 2.8 |
 | `always_range` (null) | 0.333 | 0.000 | — | 0.00 | 0.0 |
 
-Two honest readings. Even on data generated from exactly the process these methods target,
-balanced accuracy is 0.41–0.43 against a 0.33 chance floor — regime drift is small relative to
-daily noise, and identification is genuinely hard. And `ma_cross` beats the null on
-*discrimination* while scoring a **worse** Brier: it takes confident positions and pays for
-being wrong, where the null hedges. Discrimination and calibration are separate axes, and the
-harness reports both rather than picking the flattering one.
+Three honest readings.
 
-Next: Kalman / HMM / MS-AR → CUSUM / BOCPD → decision-value metrics → cross-asset sweep and
-write-up.
+**Identification is hard.** Even on data generated from exactly the process these methods
+target, balanced accuracy is 0.38–0.43 against a 0.33 chance floor. Regime drift is small
+relative to daily noise.
+
+**Discrimination and calibration are different axes.** `ma_cross` beats the null on
+discrimination while scoring a *worse* Brier: it takes confident positions and pays when wrong,
+where the null hedges. The harness reports both rather than the flattering one.
+
+**The Kalman filter loses to a moving-average crossover — for a diagnosable reason.** Maximum
+likelihood drives the slope-drift variance `q_slope` toward zero, freezing the slope so the
+filter barely tracks regime changes (detection rate 0.16). MLE maximises the one-step predictive
+likelihood of *price*, which is dominated by fitting observation noise — that is not the same
+objective as *identifying the state*. Pinning `q_slope = 1e-8` instead lifts balanced accuracy to
+**0.459**, above every baseline. MLE nonetheless stays the default, because choosing `q_slope` on
+the recovery metric is tuning on the evaluation — the backtest-overfitting trap this project
+exists to avoid. The parameter is exposed so the sensitivity can be *reported*; any principled
+tuning has to happen in-fold against a pre-committed criterion.
+
+> A methodology note worth keeping. On a single simulated market the pinned variant scored 0.604,
+> and averaging over six markets it fell to 0.459. One market is one draw. The multi-seed design
+> caught an over-claim that a single-seed run would have published.
+
+Next: HMM / MS-AR → CUSUM / BOCPD → decision-value metrics → cross-asset sweep and write-up.
 
 ## Honest notes
 
