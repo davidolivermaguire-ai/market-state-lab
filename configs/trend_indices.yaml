@@ -1,0 +1,20 @@
+# Trend state across the three headline indices.
+# Cross-asset agreement of the method ranking is the reliability evidence for RQ1 —
+# a method that wins on one index has produced one draw, not a finding.
+name: trend_indices
+universe: indices           # NAS100, US500, US30 (see msl.data.symbols.UNIVERSES)
+start: "2010-01-01"
+end: null
+
+methods:
+  - ma_cross                # transparent baseline: the bar to beat
+  - return_sign
+  - ewma_slope
+  - always_range            # the null: never claims a trend
+
+engine:
+  min_train: 750            # ~3y before anything is scored
+  refit_every: 63           # quarterly refit for methods that learn
+  embargo: 5                # drop rows adjacent to the train/test boundary
+
+output: results/trend_indices

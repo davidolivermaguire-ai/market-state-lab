@@ -1,0 +1,21 @@
+# Indices plus a fixed, pre-declared single-name list.
+# The names are declared once and never edited to match today's index membership —
+# that is what keeps the panel free of survivorship bias. Single names also stress
+# the estimators properly: idiosyncratic vol and gaps behave nothing like an index.
+name: trend_mixed
+universe: mixed
+start: "2010-01-01"
+end: null
+
+methods:
+  - ma_cross
+  - return_sign
+  - ewma_slope
+  - always_range
+
+engine:
+  min_train: 750
+  refit_every: 63
+  embargo: 5
+
+output: results/trend_mixed

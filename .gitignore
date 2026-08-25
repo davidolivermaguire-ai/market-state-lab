@@ -1,0 +1,23 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# data cache (downloads) — committed CSVs in data/raw/ ARE tracked
+data/cache/
+
+# run outputs
+results/
+figures/
+
+# os / editor
+.DS_Store
+Thumbs.db
+*.tmp
+.~lock.*#
+~$*

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "market-state-lab"
+version = "0.1.0"
+description = "A benchmark harness for identifying market states out of sample (PhD RQ1)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "David Maguire" }]
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.0",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "statsmodels>=0.14",
+  "pyyaml>=6.0",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+data = ["yfinance>=0.2", "pyarrow>=15.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+msl = "msl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
