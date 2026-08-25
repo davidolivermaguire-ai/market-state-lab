@@ -39,10 +39,12 @@ panel, and **agreement of the ranking across assets** is the actual evidence for
 ```bash
 pip install -e ".[data,dev]"      # 'data' adds yfinance + parquet, 'dev' adds pytest
 
-msl list                          # registered estimators
-msl run -c configs/trend_indices.yaml
-msl run -c configs/trend_indices.yaml --offline   # committed CSVs only, no network
-pytest -q                         # includes the look-ahead guard
+msl list                              # registered estimators
+msl run      -c configs/trend_indices.yaml        # walk-forward sweep -> tidy results
+msl recovery                                      # tier-1 scoring on synthetic markets
+msl state    -c configs/trend_indices.yaml        # current state per ticker
+msl state    -c configs/trend_indices.yaml --offline   # committed CSVs only, no network
+pytest -q                             # includes the look-ahead guard
 ```
 
 ```python
@@ -93,13 +95,49 @@ results/       tidy output: date | symbol | method | p_down | p_range | p_up | m
 tests/         look-ahead guard + schema contract tests
 ```
 
+## The per-ticker state view
+
+`msl state` reports each method's latest filtered estimate per symbol, an equal-weight
+consensus, and the council's disagreement:
+
+```
+symbol      as_of m_ma_cross m_return_sign m_ewma_slope consensus  p_up  agreement  disagreement
+NAS100 2026-07-06         up            up        range        up 0.559      0.667         0.870
+```
+
+Read it as a **state estimate with uncertainty, not a trend confirmation.** The evidence on
+this project is consistent: state earns its keep in calibration and risk control, not return
+timing. A high `p_up` says the trend estimators agree drift has been positive and persistent —
+not "buy". `disagreement` rising is the more actionable signal, since that is where the value of
+state information concentrates.
+
 ## Status
 
-**Phase 1 complete** — data layer, feature layer, estimator contract + registry, four transparent
-baselines, walk-forward engine, stability metrics, look-ahead guard (12 tests passing).
+**Phases 1–2 complete** (17 tests passing):
 
-Next: synthetic recovery suite → Kalman / HMM / MS-AR → CUSUM / BOCPD → timeliness and
-decision-value metrics → cross-asset sweep and report.
+- data layer, shared feature layer, estimator contract + registry, four transparent baselines
+- walk-forward engine, stability metrics, and the look-ahead guard
+- **recovery suite** (tier 1) with permutation-invariant scoring, and the **per-ticker state report**
+
+First recovery results, 8 simulated markets × 2,500 days — the speed/false-alarm frontier is
+already explicit, and no method is close to solved:
+
+| method | balanced acc. | ARI | median delay | detection rate | false alarms/yr |
+|---|---|---|---|---|---|
+| `ma_cross` | 0.429 | 0.034 | 23.8d | 0.30 | 2.5 |
+| `return_sign` | 0.425 | 0.041 | 10.0d | 0.80 | 19.9 |
+| `ewma_slope` | 0.413 | 0.027 | 2.9d | 0.96 | 31.6 |
+| `always_range` (null) | 0.333 | 0.000 | — | 0.00 | 0.0 |
+
+Two honest readings. Even on data generated from exactly the process these methods target,
+balanced accuracy is 0.41–0.43 against a 0.33 chance floor — regime drift is small relative to
+daily noise, and identification is genuinely hard. And `ma_cross` beats the null on
+*discrimination* while scoring a **worse** Brier: it takes confident positions and pays for
+being wrong, where the null hedges. Discrimination and calibration are separate axes, and the
+harness reports both rather than picking the flattering one.
+
+Next: Kalman / HMM / MS-AR → CUSUM / BOCPD → decision-value metrics → cross-asset sweep and
+write-up.
 
 ## Honest notes
 
