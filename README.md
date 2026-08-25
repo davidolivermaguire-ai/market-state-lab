@@ -122,15 +122,40 @@ state information concentrates.
 First recovery results, 8 simulated markets × 2,500 days — the speed/false-alarm frontier is
 already explicit, and no method is close to solved:
 
-| method | balanced acc. | ARI | Brier | label gap | median delay | detection rate | false alarms/yr |
-|---|---|---|---|---|---|---|---|
-| **`hmm_gaussian`** | **0.616** | 0.422 | **0.510** | 0.185 | 4.9d | 0.77 | 9.0 |
-| `ms_regression` | 0.610 | **0.431** | 0.521 | 0.324 | 3.0d | 0.79 | 21.9 |
-| `ma_cross` | 0.430 | 0.058 | 0.735 | 0.059 | 23.4d | 0.33 | 2.8 |
-| `return_sign` | 0.426 | 0.046 | 0.723 | 0.022 | 12.0d | 0.80 | 20.9 |
-| `ewma_slope` | 0.421 | 0.031 | 0.734 | 0.025 | 3.3d | 0.95 | 33.7 |
-| `kalman_trend` (MLE) | 0.381 | 0.015 | 0.691 | 0.005 | 22.4d | 0.16 | 2.8 |
-| `always_range` (null) | 0.333 | 0.000 | 0.653 | — | — | 0.00 | 0.0 |
+| method | kind | balanced acc. | ARI | Brier | label gap | median delay | detection rate | false alarms/yr |
+|---|---|---|---|---|---|---|---|---|
+| **`hmm_gaussian`** | state | **0.616** | 0.422 | **0.510** | 0.185 | 4.9d | 0.77 | 9.0 |
+| `ms_regression` | state | 0.610 | **0.431** | 0.521 | 0.324 | 3.0d | 0.79 | 21.9 |
+| `bocpd` | changepoint | 0.477 | 0.098 | 0.645 | **0.040** | 8.5d | **0.80** | 15.8 |
+| `ma_cross` | state | 0.430 | 0.058 | 0.735 | 0.059 | 23.4d | 0.33 | 2.8 |
+| `return_sign` | state | 0.426 | 0.046 | 0.723 | 0.022 | 12.0d | 0.80 | 20.9 |
+| `ewma_slope` | state | 0.421 | 0.031 | 0.734 | 0.025 | 3.3d | 0.95 | 33.7 |
+| `cusum` | changepoint | 0.393 | 0.034 | 0.662 | 0.071 | 33.3d | 0.10 | **0.3** |
+| `kalman_trend` (MLE) | state | 0.381 | 0.015 | 0.691 | 0.005 | 22.4d | 0.16 | 2.8 |
+| `always_range` (null) | — | 0.333 | 0.000 | 0.653 | — | — | 0.00 | 0.0 |
+
+**"Most reliably" has no single answer — it depends what you need the state for.** Rank by
+classification and the switching models win. Rank by catching a change without crying wolf and
+the ordering changes completely: `cusum` at the textbook threshold fires 0.3 false alarms a year
+against `ewma_slope`'s 33.7. `bocpd` matches the best detection rate in the table (0.80) with
+near-perfect label reliability (gap 0.040) while sitting mid-table on classification — a good
+detector and a mediocre classifier, exactly as its design implies. Reporting one number would
+have hidden all of this.
+
+The CUSUM threshold traces the average-run-length trade-off directly, and — untuned, as with the
+Kalman variance — the defaults sit at the conservative extreme:
+
+| `h` | median delay | detection rate | false alarms/yr | balanced acc. |
+|---|---|---|---|---|
+| 2.0 | 11.9d | 0.571 | 5.18 | 0.382 |
+| 3.0 | 15.6d | 0.254 | 1.51 | 0.413 |
+| 4.0 | 27.2d | 0.090 | 0.45 | 0.424 |
+| 5.0 (default) | 33.3d | 0.101 | 0.31 | 0.393 |
+| 7.0 | 21.8d | 0.044 | 0.11 | 0.434 |
+
+Detection and false alarms move monotonically with `h`, while balanced accuracy stays flat at
+0.38–0.43 throughout. The threshold buys **timeliness, not classification** — which is precisely
+why change-point detectors are scored on a different axis and carry `kind = "changepoint"`.
 
 **The switching models decisively earn their complexity.** Both reach ~0.61 balanced accuracy
 against a 0.33 floor, with roughly seven times the ARI of the best baseline, and both beat the
@@ -186,7 +211,8 @@ tuning has to happen in-fold against a pre-committed criterion.
 > and averaging over six markets it fell to 0.459. One market is one draw. The multi-seed design
 > caught an over-claim that a single-seed run would have published.
 
-Next: HMM / MS-AR → CUSUM / BOCPD → decision-value metrics → cross-asset sweep and write-up.
+Next: decision-value metrics → the cross-asset sweep on **real** data (everything above is a home
+fixture) → deflated significance for the method × asset comparison → write-up.
 
 ## Honest notes
 

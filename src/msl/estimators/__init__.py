@@ -1,4 +1,10 @@
-from msl.estimators import baselines, hmm, kalman, msar  # noqa: F401  (import registers them)
+from msl.estimators import (  # noqa: F401  (importing registers the estimators)
+    baselines,
+    changepoint,
+    hmm,
+    kalman,
+    msar,
+)
 from msl.estimators.base import (
     STATES,
     StateEstimator,
