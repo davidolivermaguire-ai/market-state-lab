@@ -293,7 +293,7 @@ Honest limitations.
 1. **The gains are small.** 2–10% relative Brier. Statistically distinguishable is not
    economically interesting, and nothing here has been costed as a strategy.
 2. **The deflation is single-asset.** 24 comparisons on NAS100. The full 8 × 7 × 3 = 168-cell
-   panel (189 with the ninth method) raises the bar to |t| > 3.24, and on David's cross-asset runs
+   panel (189 with the ninth method) raises the bar to |t| > 3.24, and on cross-asset runs
    `ewma_slope` held (−0.0138 over seven assets) while `bocpd` decayed with every widening of the
    sample (−0.0074 → −0.0047 → −0.0020). Running that grid under deflation is the outstanding
    test, and until it exists `bocpd` should be read as a hypothesis, not a finding.
