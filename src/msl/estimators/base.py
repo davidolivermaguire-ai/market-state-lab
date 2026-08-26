@@ -64,11 +64,18 @@ class StateEstimator(ABC):
     kind : str
         "state" for estimators answering *which state*; "changepoint" for detectors
         answering *has it changed* — scored on timeliness, not classification.
+    full_replay : bool
+        True if the estimator's state has effectively unbounded memory, so the
+        walk-forward engine must replay the whole prefix rather than a bounded run-up.
+        Most filters forget the distant past geometrically and are safe to window; the
+        local-linear-trend filter is not, because a near-zero slope variance makes its
+        slope an integral of the entire history.
     """
 
     name: str = "unnamed"
     requires_fit: bool = False
     kind: str = "state"
+    full_replay: bool = False
 
     def __init__(self, **params):
         self.params = params
@@ -114,7 +121,13 @@ def validate_output(out: pd.DataFrame, index: pd.Index, who: str = "estimator") 
         raise ValueError(f"{who}: output missing columns {missing}")
     if not out.index.equals(index):
         raise ValueError(f"{who}: output index does not match the input index")
-    tot = out[PROB_COLUMNS].sum(axis=1).dropna()
-    if len(tot) and not np.allclose(tot.values, 1.0, atol=1e-6):
+
+    # Check only fully-populated rows. Warm-up rows are legitimately all-NaN, and
+    # pandas sums an all-NaN object row to 0.0 rather than NaN — so a naive
+    # `.sum(axis=1).dropna()` would reject a perfectly valid estimator.
+    probs = out[PROB_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    complete = probs.notna().all(axis=1)
+    tot = probs[complete].sum(axis=1)
+    if len(tot) and not np.allclose(tot.to_numpy(), 1.0, atol=1e-6):
         raise ValueError(f"{who}: state probabilities do not sum to 1")
     return out[OUTPUT_COLUMNS]

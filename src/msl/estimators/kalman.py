@@ -73,39 +73,57 @@ class KalmanLocalLinearTrend(StateEstimator):
     """Filtered slope of a local-linear-trend model, scored against its own error."""
 
     requires_fit = True
+    # Maximum likelihood drives q_slope toward zero (see below), which makes the slope
+    # an integral of the whole history rather than a fading average. Bounding the
+    # run-up therefore changes the estimate materially — measured at ~0.8 MAP agreement
+    # against full replay — so this filter opts out of the windowed shortcut.
+    full_replay = True
 
-    def __init__(self, sharpness: float = 0.5, max_iter: int = 60, q_slope: float | None = None):
+    def __init__(self, sharpness: float = 0.5, max_iter: int = 60,
+                 q_slope: float | str | None = None,
+                 trend_halflife: int = 42, drift_fraction: float = 0.1):
         """
         Parameters
         ----------
-        q_slope : float, optional
-            Fix the slope-drift variance instead of estimating it. Left as None
-            (the default) it is estimated by maximum likelihood — see the objective
-            mismatch documented below. Exposed so the *sensitivity* to this parameter
-            can be reported honestly rather than tuned away.
+        q_slope : float | "mle" | None
+            ``None`` (default) derives the slope-drift variance from a **stated prior**
+            on how fast trend evolves — see below. A float pins it. ``"mle"`` estimates
+            it by maximum likelihood, which is the documented failure case.
+        trend_halflife, drift_fraction : int, float
+            The prior. Trend drift should be able to wander by `drift_fraction` of a
+            daily return's magnitude over `trend_halflife` days, giving
+            ``q_slope = (drift_fraction * sigma_r)^2 / trend_halflife``. Defaults say a
+            trend can shift by a tenth of daily volatility over roughly two months.
 
-        Objective mismatch (a finding, not a bug)
-        -----------------------------------------
-        On simulated regime-switching data the filter reaches ~0.60 balanced accuracy
-        with `q_slope` around 1e-8, well above every transparent baseline. Maximum
-        likelihood instead drives `q_slope` toward zero (~1e-9 and below), which
-        freezes the slope and drops accuracy to ~0.43. MLE maximises the one-step
-        predictive likelihood of *price*, and that is dominated by fitting observation
-        noise — it is not the same objective as *identifying the state*.
+        Why the prior replaced MLE as the default (a finding, not a bug)
+        ----------------------------------------------------------------
+        Maximum likelihood drives `q_slope` to the floor. On real Nasdaq data it lands
+        on 1e-12 — the exact lower bound — which freezes the slope entirely. Because
+        equity log-price has persistent positive drift, a frozen slope stays positive
+        forever, and the filter reported "up" on **100% of days** for four of seven
+        assets. That is a constant, not a state estimator.
 
-        MLE remains the default because selecting `q_slope` on the recovery metric
-        would be tuning on the evaluation, which is precisely the backtest-overfitting
-        trap this project exists to avoid. Any principled tuning has to happen in-fold,
-        on training data, against a pre-committed criterion.
+        The cause is an objective mismatch: MLE maximises the one-step predictive
+        likelihood of *price*, which is dominated by fitting observation noise. It is
+        not the same objective as *identifying the state*, and nothing forces the two
+        to agree.
+
+        The prior is a modelling choice made from the training window and a stated
+        belief about trend persistence — never from the evaluation metric, which would
+        be selecting on the answer. `sigma_r` is measured on training data only.
         """
-        super().__init__(sharpness=sharpness, max_iter=max_iter, q_slope=q_slope)
+        super().__init__(sharpness=sharpness, max_iter=max_iter, q_slope=q_slope,
+                         trend_halflife=trend_halflife, drift_fraction=drift_fraction)
         self.sharpness = sharpness
         self.max_iter = max_iter
-        self.fixed_q_slope = q_slope
+        self.trend_halflife = trend_halflife
+        self.drift_fraction = drift_fraction
+        self.use_mle_slope = (q_slope == "mle")
+        self.user_q_slope = None if isinstance(q_slope, str) else q_slope
         # sensible defaults so filter() works before fit() (and in the contract tests):
         # observation noise dominates, the slope drifts very slowly.
         self.q_level_ = 1e-5
-        self.q_slope_ = q_slope if q_slope is not None else 1e-8
+        self.q_slope_ = self.user_q_slope if self.user_q_slope is not None else 1e-8
         self.r_ = 1e-4
 
     # ---------------------------------------------------------------- fit
@@ -115,11 +133,18 @@ class KalmanLocalLinearTrend(StateEstimator):
         if len(y) < 100:
             return self                                   # too short to identify: keep defaults
 
-        if self.fixed_q_slope is not None:
-            # q_slope is pinned by the caller; estimate only the other two variances
+        # Resolve the slope variance for THIS training window, recomputed at every fit
+        # so the prior tracks the volatility of the window actually being trained on.
+        pinned = self.user_q_slope
+        if pinned is None and not self.use_mle_slope:
+            sigma_r = float(np.std(np.diff(y)))          # training-window volatility only
+            pinned = max((self.drift_fraction * sigma_r) ** 2 / max(self.trend_halflife, 1), 1e-14)
+
+        if pinned is not None:
+            # slope variance is set (prior-derived or user-pinned); estimate the rest
             def nll(theta: np.ndarray) -> float:
                 q_l, r = np.exp(theta)
-                _, _, ll = _kf(y, q_l, self.fixed_q_slope, r)
+                _, _, ll = _kf(y, q_l, pinned, r)
                 return -ll if np.isfinite(ll) else 1e12
 
             start = np.log([self.q_level_, self.r_])
@@ -131,7 +156,7 @@ class KalmanLocalLinearTrend(StateEstimator):
                     self.q_level_, self.r_ = np.exp(res.x)
             except Exception:
                 pass
-            self.q_slope_ = self.fixed_q_slope
+            self.q_slope_ = pinned
             return self
 
         def nll(theta: np.ndarray) -> float:

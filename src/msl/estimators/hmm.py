@@ -115,6 +115,7 @@ class GaussianHMM(StateEstimator):
         self.n_iter, self.tol, self.seed, self.n_init = n_iter, tol, seed, n_init
         self.min_occupancy = 0.08
         self.degenerate_ = False
+        self._fitted_once = False
         # defaults so filter() works before fit(): persistent regimes, ordered means
         self.mu_ = np.array([-1.0e-3, 0.0, 1.0e-3])
         self.var_ = np.array([4.0e-4, 6.4e-5, 1.0e-4])
@@ -129,9 +130,14 @@ class GaussianHMM(StateEstimator):
             return self
 
         rng = np.random.default_rng(self.seed)
+        # Warm start across walk-forward blocks: consecutive training windows overlap
+        # heavily, so after the first fit the previous solution is an excellent
+        # starting point and the full multi-restart search is wasted work.
+        n_init = max(1, self.n_init) if not self._fitted_once else 2
+
         best = None      # best solution with all states non-degenerate
         fallback = None  # best overall, used only if every solution is degenerate
-        for attempt in range(max(1, self.n_init)):
+        for attempt in range(n_init):
             mu, var, A, pi, ll = self._em_once(y, rng, attempt)
             if not np.isfinite(ll):
                 continue
@@ -155,11 +161,16 @@ class GaussianHMM(StateEstimator):
         self.mu_, self.var_, self.pi_ = mu[order], var[order], pi[order]
         self.A_ = A[np.ix_(order, order)]
         self.A_ /= np.maximum(self.A_.sum(axis=1, keepdims=True), _EPS)
+        self._fitted_once = True
         return self
 
     def _em_once(self, y: np.ndarray, rng: np.random.Generator, attempt: int):
         """One Baum-Welch run from a randomised start. Returns (mu, var, A, pi, loglik)."""
         base_var = max(float(y.var()), _VAR_FLOOR)
+        if self._fitted_once and attempt == 0:
+            # resume from the previous block's solution
+            mu, var, A, pi = self.mu_.copy(), self.var_.copy(), self.A_.copy(), self.pi_.copy()
+            return self._em_loop(y, mu, var, A, pi)
         if attempt == 0:
             # data-driven start: quantile means, variances spread low/mid/high
             mu = np.quantile(y, [0.15, 0.5, 0.85])
@@ -172,7 +183,11 @@ class GaussianHMM(StateEstimator):
         A = np.full((K, K), (1.0 - diag) / (K - 1)) + np.eye(K) * (diag - (1.0 - diag) / (K - 1))
         A /= A.sum(axis=1, keepdims=True)
         pi = np.full(K, 1.0 / K)
+        return self._em_loop(y, mu, var, A, pi)
 
+    def _em_loop(self, y: np.ndarray, mu: np.ndarray, var: np.ndarray,
+                 A: np.ndarray, pi: np.ndarray):
+        """Baum-Welch iterations from a given start. Returns (mu, var, A, pi, loglik)."""
         prev, ll = -np.inf, -np.inf
         for _ in range(self.n_iter):
             logB = _log_emissions(y, mu, var)
@@ -184,14 +199,16 @@ class GaussianHMM(StateEstimator):
             gamma = alpha * beta
             gamma /= np.maximum(gamma.sum(axis=1, keepdims=True), _EPS)
 
-            # xi summed over t, for the transition update
+            # xi summed over t, for the transition update.
+            #   xi_ij = A_ij * SUM_t alpha[t,i] * B[t+1,j] * beta[t+1,j] / c[t+1]
+            # The sum over t is an outer-product accumulation, so it is one matmul
+            # rather than a Python loop over thousands of timesteps — which is where
+            # essentially all of this estimator's runtime used to go.
             m = logB.max(axis=1)
             B = np.exp(logB - m[:, None])
-            xi = np.zeros((K, K))
-            for t in range(len(y) - 1):
-                x = (alpha[t][:, None] * A) * (B[t + 1] * beta[t + 1])[None, :] / c[t + 1]
-                xi += x
-            A = xi / np.maximum(xi.sum(axis=1, keepdims=True), _EPS)
+            nxt = B[1:] * beta[1:] / c[1:, None]          # (T-1, K)
+            A = A * (alpha[:-1].T @ nxt)                   # (K, K)
+            A = A / np.maximum(A.sum(axis=1, keepdims=True), _EPS)
 
             w = np.maximum(gamma.sum(axis=0), _EPS)
             mu = (gamma * y[:, None]).sum(axis=0) / w

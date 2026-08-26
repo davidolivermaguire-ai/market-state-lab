@@ -11,10 +11,17 @@ methods:
   - return_sign
   - ewma_slope
   - always_range            # the null: never claims a trend
+  - kalman_trend
+  - hmm_gaussian
+  - ms_regression
+  - cusum
+  - bocpd
 
 engine:
   min_train: 750            # ~3y before anything is scored
   refit_every: 63           # quarterly refit for methods that learn
   embargo: 5                # drop rows adjacent to the train/test boundary
+  warmup: 750               # bounded run-up before each scored block
+  max_train: 1250           # rolling (not expanding) fit window
 
 output: results/trend_indices

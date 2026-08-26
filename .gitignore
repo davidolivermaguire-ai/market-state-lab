@@ -21,3 +21,6 @@ Thumbs.db
 *.tmp
 .~lock.*#
 ~$*
+.idea/
+.vscode/
+*.swp

@@ -8,14 +8,24 @@ start: "2010-01-01"
 end: null
 
 methods:
+  # transparent baselines — the bar every sophisticated method must clear
   - ma_cross
   - return_sign
   - ewma_slope
-  - always_range
+  - always_range          # the null: never claims a trend
+  # state estimators
+  - kalman_trend
+  - hmm_gaussian
+  - ms_regression
+  # change-point detectors — scored on timeliness, not classification
+  - cusum
+  - bocpd
 
 engine:
   min_train: 750
-  refit_every: 63
+  refit_every: 63         # raise to 126 to halve the ms_regression cost
   embargo: 5
+  warmup: 750             # bounded run-up before each scored block
+  max_train: 1250         # rolling (not expanding) fit window
 
 output: results/trend_mixed

@@ -27,8 +27,30 @@ def run_estimator(
     min_train: int = 750,
     refit_every: int = 63,
     embargo: int = 5,
+    warmup: int = 750,
+    max_train: int = 1250,
 ) -> pd.DataFrame:
-    """Walk-forward state estimates for one estimator on one asset."""
+    """Walk-forward state estimates for one estimator on one asset.
+
+    Two bounds keep the total cost linear in the length of the series. Without them the
+    engine is O(n²/refit_every) in two separate places, which is why a full sweep took
+    many minutes:
+
+    `warmup` — how much history is replayed before each scored block. Bounding it is an
+    approximation justified by the fact that every estimator here is a filter whose
+    dependence on the distant past decays geometrically. It is not free, though, and
+    filters differ: the HMM forward recursion forgets quickly, while the Kalman filter
+    starts from a diffuse prior and its slope estimate needs longer to settle.
+
+    `max_train` — how much history each refit sees, making the fit a *rolling* rather
+    than expanding window. This is where the real cost sat for the maximum-likelihood
+    estimators, whose optimisers replay the whole training slice many times per fit. A
+    rolling window is also defensible on its own terms under non-stationarity: recent
+    data is more relevant to current parameters than data from a decade ago.
+
+    Set either to 0 to disable it. `tests/test_walkforward.py` measures the resulting
+    difference against full replay rather than assuming it away.
+    """
     if not estimator.requires_fit:
         out = estimator.filter(features)
         return validate_output(out, features.index, estimator.name)
@@ -41,9 +63,13 @@ def run_estimator(
     for start in range(min_train, n, refit_every):
         stop = min(start + refit_every, n)
         train_end = max(0, start - embargo)          # embargo: drop the rows adjacent to the block
-        estimator.fit(features.iloc[:train_end])
-        # filter over the whole prefix (the estimator is causal), then keep only new rows
-        block = estimator.filter(features.iloc[:stop]).iloc[start:stop]
+        train_lo = 0 if max_train <= 0 else max(0, train_end - max_train)
+        estimator.fit(features.iloc[train_lo:train_end])
+        # replay a bounded run-up, then keep only the newly scored rows
+        # (estimators with unbounded memory opt out and replay everything)
+        bound = warmup if not getattr(estimator, "full_replay", False) else 0
+        lo = 0 if bound <= 0 else max(0, start - bound)
+        block = estimator.filter(features.iloc[lo:stop]).iloc[start - lo : stop - lo]
         out.iloc[start:stop] = block.values
 
     out[[c for c in OUTPUT_COLUMNS if c != "map_state"]] = out[
@@ -58,6 +84,8 @@ def run_sweep(
     min_train: int = 750,
     refit_every: int = 63,
     embargo: int = 5,
+    warmup: int = 750,
+    max_train: int = 1250,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """Run every method across every asset; return one tidy long frame."""
@@ -68,7 +96,7 @@ def run_sweep(
             name, params = (spec, {}) if isinstance(spec, str) else spec
             est = get_estimator(name, **params)
             try:
-                out = run_estimator(feats, est, min_train, refit_every, embargo)
+                out = run_estimator(feats, est, min_train, refit_every, embargo, warmup, max_train)
             except Exception as exc:
                 print(f"  [warn] {name} failed on {symbol}: {exc}")
                 continue

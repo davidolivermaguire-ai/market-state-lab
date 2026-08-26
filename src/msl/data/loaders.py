@@ -56,17 +56,34 @@ def load_prices(
     start: str | None = None,
     end: str | None = None,
     allow_download: bool = True,
+    prefer_fresh: bool = False,
 ) -> pd.DataFrame:
-    """Daily OHLCV for a friendly symbol name, as a sorted, tidy frame."""
+    """Daily OHLCV for a friendly symbol name, as a sorted, tidy frame.
+
+    `prefer_fresh=True` skips the committed CSV and downloads. Use it when symbols must
+    share a common as-of date: a committed CSV is frozen at the date it was published,
+    so mixing it with freshly-downloaded symbols silently compares states at different
+    points in time.
+    """
     key = symbol.upper()
 
     csv = _raw_dir() / f"{key}.csv"
+    if prefer_fresh and allow_download:
+        csv = Path("__skip__")
     if csv.exists():
         df = _tidy(pd.read_csv(csv))
     else:
         pq = _cache_dir() / f"{key}.parquet"
+        cached = None
         if pq.exists():
-            df = _tidy(pd.read_parquet(pq))
+            try:
+                cached = _tidy(pd.read_parquet(pq))
+            except Exception:
+                # An unreadable cache (e.g. no parquet engine installed here) is a
+                # reason to re-fetch, not a reason to lose the symbol.
+                cached = None
+        if cached is not None:
+            df = cached
         elif allow_download:
             df = _tidy(_download(key, start, end))
             _cache_dir().mkdir(parents=True, exist_ok=True)
@@ -110,6 +127,7 @@ def load_universe(
     start: str | None = None,
     end: str | None = None,
     allow_download: bool = True,
+    prefer_fresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Load a named universe (or an explicit list) as {symbol: prices}.
 
@@ -120,7 +138,8 @@ def load_universe(
     out: dict[str, pd.DataFrame] = {}
     for s in symbols:
         try:
-            out[s] = load_prices(s, start, end, allow_download=allow_download)
+            out[s] = load_prices(s, start, end, allow_download=allow_download,
+                                 prefer_fresh=prefer_fresh)
         except Exception as exc:
             print(f"  [warn] skipping {s}: {exc}")
     if not out:

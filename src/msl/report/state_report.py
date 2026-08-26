@@ -33,6 +33,28 @@ def _entropy(p: np.ndarray) -> float:
     return float(-np.sum(p * np.log(p)) / np.log(K))
 
 
+def _decompose(vectors: list[np.ndarray]) -> tuple[float, float]:
+    """Split consensus entropy into *uncertainty* and genuine *disagreement*.
+
+        H(mean p)  =  mean H(p_i)   +   JSD
+        uncertainty   individual doubt   disagreement between methods
+
+    This matters. The entropy of the averaged distribution alone cannot tell the two
+    apart: three methods that each shrug produce the same flat average as three
+    methods that confidently contradict each other. Only the second is disagreement,
+    and the proposal's claim — that the value of state information concentrates where
+    the council disagrees — is about the second. The Jensen-Shannon divergence is the
+    part that isolates it.
+    """
+    P = np.vstack(vectors)
+    mean_p = P.mean(axis=0)
+    mean_p = mean_p / max(mean_p.sum(), 1e-12)
+    total = _entropy(mean_p)                                   # H(mean p)
+    individual = float(np.mean([_entropy(p) for p in P]))      # mean H(p_i)
+    jsd = max(0.0, total - individual)                         # disagreement
+    return total, jsd
+
+
 def state_report(
     prices: dict[str, pd.DataFrame],
     methods: list[str],
@@ -67,6 +89,7 @@ def state_report(
         mean_p = mean_p / mean_p.sum()
         consensus = STATES[int(mean_p.argmax())]
         agree = float(np.mean([s == consensus for s in per_method.values() if s != "n/a"]))
+        uncertainty, disagreement = _decompose(vectors)
 
         rows.append({
             "symbol": symbol,
@@ -77,7 +100,8 @@ def state_report(
             "p_up": round(float(mean_p[STATES.index("up")]), 3),
             "p_down": round(float(mean_p[STATES.index("down")]), 3),
             "agreement": round(agree, 3),
-            "disagreement": round(_entropy(mean_p), 3),
+            "uncertainty": round(uncertainty, 3),
+            "disagreement": round(disagreement, 3),
         })
 
     if not rows:

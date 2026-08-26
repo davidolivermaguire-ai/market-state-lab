@@ -87,7 +87,13 @@ class MarkovSwitchingRegression(StateEstimator):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 mod = _build(y, x)
-                res = mod.fit(em_iter=self.em_iter, maxiter=self.max_iter, disp=False)
+                # Warm start from the previous walk-forward block: consecutive training
+                # windows overlap heavily, so the last solution is a good starting point
+                # and the optimiser converges in far fewer iterations.
+                kw = {}
+                if self.params_ is not None and len(self.params_) == len(mod.param_names):
+                    kw["start_params"] = self.params_
+                res = mod.fit(em_iter=self.em_iter, maxiter=self.max_iter, disp=False, **kw)
             self.params_ = np.asarray(res.params, dtype=float)
             self.col_order_ = np.argsort(_regime_means(mod, self.params_))
         except Exception:
