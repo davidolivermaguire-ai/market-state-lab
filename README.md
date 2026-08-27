@@ -53,14 +53,21 @@ drops the flip-rate control from the `decision` benchmark (less conservative); `
 scores every method on the intersection of usable dates, so the cross-method ranking is
 like-for-like rather than period-dependent.
 
-Reproducing the published result exactly — one asset, all eight scored methods:
+The published headline is the **seven-asset panel** — 168 comparisons at a deflated bar of 3.20:
+
+```bash
+msl decision -c configs/trend_mixed.yaml --refresh --common-window
+```
+
+That needs `--refresh` (only NAS100 is committed), so it is dated rather than deterministic:
+re-running later pulls more data and moves the numbers. For a fully reproducible run with no
+network, the single-asset version uses the committed CSV frozen at 2026-07-06:
 
 ```bash
 msl decision -c configs/trend_indices.yaml --offline --common-window
 ```
 
-The committed `data/raw/NAS100.csv` is frozen at 2026-07-06 so this is deterministic. Adding
-`--refresh` will pull newer data and move the numbers slightly; that is expected, not a bug.
+Read that one as the *discovery* step. The panel is what tested it — and demoted it.
 
 ```python
 from msl.data import load_universe
@@ -239,16 +246,32 @@ bar |t| > sqrt(2 ln 24) = **2.52**:
 (`always_range` is excluded from this tier: a state that never changes carries no information to
 test, and scoring it would only pad N and loosen the bar.)
 
-**One result survives everything, and nothing is a significant harm.**
+**The panel is the real test, and it demoted the result.**
 
-An earlier version of this table scored each estimator on its own usable span — 2,355 days for
-the baselines and BOCPD, 1,755 for the four fitted methods — and reported four significant
-*harms* (`bocpd`/loss t = +4.57, `return_sign`/loss +3.84, `bocpd`/direction +3.31,
-`return_sign`/direction +3.20). Every individual comparison was fair; the ranking was not,
-because four methods were judged on 2015–2018 and four were not. `msl decision --common-window`
-aligns them, and **all four harms vanish**. `bocpd`'s calibration gain vanishes with them
-(−0.0074 → −0.0021, t −2.60 → −0.43), which agrees with its decay across the cross-asset panel.
-`ewma_slope` went the other way and got stronger. That retraction is kept here on purpose.
+The single-asset table above is a *discovery*. Running the same protocol across seven assets
+(NAS100, US500, US30, AAPL, MSFT, JPM, XOM) gives 168 comparisons and a bar of |t| > 3.20:
+
+| outcome | count |
+|---|---|
+| direction made **worse** | 53 of 56 |
+| loss made **worse** | 48 of 56 |
+| significant **helps** | 2 of 168 |
+| significant **harms** | **18 of 168** (0.23 expected by chance) |
+
+`ewma_slope` on the volatility target is negative on **7 of 7** assets — the sign replicates
+everywhere — but clears the bar on only **US500** (−0.0256, t −4.70) and **JPM** (−0.0128,
+t −3.57). On NAS100, the asset it was found on, it reaches only t = −1.62 once the sample is
+extended back to 2010. Nothing was wrong with the single-asset analysis; it was one draw, and
+one draw is what the deflated bar exists to distrust.
+
+The harms are the other surprise. Eighteen significant harms against 0.23 expected is roughly
+seventy-eight times chance, concentrated in `ma_cross` (5) and `hmm_gaussian` (5) and on the
+direction target (8). Adding state to a volatility-only model is not free.
+
+Two earlier claims in this README were wrong and are kept here rather than quietly deleted:
+the four "significant harms" reported from own-span scoring were a property of 2015–2018, and
+`bocpd`'s calibration gain (−0.0074, t −2.60) does not survive either the common window
+(t −0.43) or the panel (mean −0.0011).
 
 A tension worth keeping: the one robust winner is `ewma_slope` — a trend rule that ranks *worst*
 on the stability tier (5-day duration, 0.19 flip rate). It is a poor state estimator by every
