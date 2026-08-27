@@ -155,27 +155,46 @@ def cmd_decision(args: argparse.Namespace) -> int:
     from msl.engine.walkforward import run_estimator
     from msl.estimators.base import get_estimator
     from msl.features.core import build_features
-    from msl.metrics.decision import calibration_gain, deflate, risk_control
+    from msl.metrics.decision import calibration_gain, deflate, risk_control, scored_index
 
     cfg = yaml.safe_load(_find_config(args.config).read_text(encoding="utf-8"))
     prices = load_universe(cfg["universe"], cfg.get("start"), cfg.get("end"),
                            allow_download=not args.offline, prefer_fresh=args.refresh)
     methods = [m for m in cfg["methods"] if m != "always_range"]
+    control = not args.no_control
 
     cal_rows, risk_rows = [], []
     for symbol, px in prices.items():
         feats = build_features(px)
+
+        # Pass 1: estimate. Methods that fit surrender a training window, so their
+        # usable spans differ; scoring each on its own span makes every individual
+        # comparison fair but the cross-method ranking a comparison of periods.
+        est: dict[str, pd.DataFrame] = {}
         for name in methods:
             try:
-                states = run_estimator(feats, get_estimator(name))
+                est[name] = run_estimator(feats, get_estimator(name))
             except Exception as exc:
                 print(f"  [warn] {name} failed on {symbol}: {exc}")
-                continue
+        if not est:
+            continue
+
+        common = None
+        if args.common_window:
+            spans = {n: scored_index(s, feats, args.horizon, control) for n, s in est.items()}
+            common = spans[min(spans, key=lambda n: len(spans[n]))]
+            for idx in spans.values():
+                common = common.intersection(idx)
+            lo, hi = min(len(i) for i in spans.values()), max(len(i) for i in spans.values())
+            print(f"  {symbol}: spans {lo}–{hi} days -> common window {len(common)}")
+
+        # Pass 2: score, every method on identical dates when --common-window is set.
+        for name, states in est.items():
             c = calibration_gain(states, feats, horizon=args.horizon,
-                                 control_instability=not args.no_control)
+                                 control_instability=control, common_index=common)
             if not c.empty:
                 c.insert(0, "method", name); c.insert(0, "symbol", symbol); cal_rows.append(c)
-            r = risk_control(states, feats)
+            r = risk_control(states, feats, common_index=common)
             if not r.empty:
                 r = r.assign(method=name, symbol=symbol); risk_rows.append(r)
             print(f"  {symbol:<8} {name}")
@@ -257,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--horizon", type=int, default=5, help="forecast horizon in days")
     d.add_argument("--no-control", action="store_true",
                    help="do NOT add the estimator's flip rate to the baseline (less conservative)")
+    d.add_argument("--common-window", action="store_true",
+                   help="score every method on the intersection of usable dates, so the "
+                        "cross-method ranking is like-for-like rather than period-dependent")
     d.add_argument("--offline", action="store_true", help="never download; committed CSVs only")
     d.add_argument("--refresh", action="store_true", help="skip committed CSVs and download")
     d.set_defaults(func=cmd_decision)

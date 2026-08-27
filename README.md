@@ -49,12 +49,14 @@ pytest -q                             # includes the look-ahead guard
 
 Useful flags: `--offline` uses committed CSVs only and never touches the network; `--refresh`
 skips the committed CSVs and downloads, so every symbol shares an as-of date; `--no-control`
-drops the flip-rate control from the `decision` benchmark (less conservative).
+drops the flip-rate control from the `decision` benchmark (less conservative); `--common-window`
+scores every method on the intersection of usable dates, so the cross-method ranking is
+like-for-like rather than period-dependent.
 
 Reproducing the published result exactly — one asset, all eight scored methods:
 
 ```bash
-msl decision -c configs/trend_indices.yaml --offline
+msl decision -c configs/trend_indices.yaml --offline --common-window
 ```
 
 The committed `data/raw/NAS100.csv` is frozen at 2026-07-06 so this is deterministic. Adding
@@ -201,7 +203,8 @@ instability, not state information at all.
 
 `calibration_gain(..., control_instability=True)` tests it directly by adding the estimator's own
 causal rolling flip rate to the **baseline**, so the benchmark already sees how much the state has
-been churning. If the hypothesis held, the gain would collapse. It did the opposite:
+been churning. If the hypothesis held, the gain would collapse. It did the opposite (own-span
+figures, pre-dating `--common-window`; the conclusion is unchanged under it):
 
 | method (volatility target) | plain | t | + flip-rate control | t |
 |---|---|---|---|---|
@@ -229,17 +232,23 @@ bar |t| > sqrt(2 ln 24) = **2.52**:
 
 | result | brier delta | t | p (FDR) | survives |
 |---|---|---|---|---|
-| `ewma_slope` / volatility | −0.0171 | **−3.98** | 0.0008 | **FDR + deflated, and would clear the 189-cell bar** |
-| `bocpd` / volatility | −0.0074 | −2.60 | 0.038 | FDR + deflated at N=24; **fails** at N=189 |
-| everything else negative | — | > −1.9 | — | no |
+| `ewma_slope` / volatility | −0.0213     | **−3.93** | 0.0020  | **FDR + deflated, and would clear the 189-cell bar** |
+| `return_sign` / volatility| −0.0111     | −2.54     | 0.117   | deflated bar only; **fails** FDR                     |
+| everything else           | —           | \|t\| < 2.3 | —     | no                                                   |
 
 (`always_range` is excluded from this tier: a state that never changes carries no information to
 test, and scoring it would only pad N and loosen the bar.)
 
-**One result survives everything.** And the direction/loss columns are not merely nulls — several
-are significant *harms*: `bocpd`/loss t = **+4.57**, `return_sign`/loss +3.84, `bocpd`/direction
-+3.31. Adding state to a volatility-only model does not just fail to help there, it measurably
-hurts.
+**One result survives everything, and nothing is a significant harm.**
+
+An earlier version of this table scored each estimator on its own usable span — 2,355 days for
+the baselines and BOCPD, 1,755 for the four fitted methods — and reported four significant
+*harms* (`bocpd`/loss t = +4.57, `return_sign`/loss +3.84, `bocpd`/direction +3.31,
+`return_sign`/direction +3.20). Every individual comparison was fair; the ranking was not,
+because four methods were judged on 2015–2018 and four were not. `msl decision --common-window`
+aligns them, and **all four harms vanish**. `bocpd`'s calibration gain vanishes with them
+(−0.0074 → −0.0021, t −2.60 → −0.43), which agrees with its decay across the cross-asset panel.
+`ewma_slope` went the other way and got stronger. That retraction is kept here on purpose.
 
 A tension worth keeping: the one robust winner is `ewma_slope` — a trend rule that ranks *worst*
 on the stability tier (5-day duration, 0.19 flip rate). It is a poor state estimator by every
@@ -297,10 +306,10 @@ Honest limitations.
    `ewma_slope` held (−0.0138 over seven assets) while `bocpd` decayed with every widening of the
    sample (−0.0074 → −0.0047 → −0.0020). Running that grid under deflation is the outstanding
    test, and until it exists `bocpd` should be read as a hypothesis, not a finding.
-3. **The scored samples are unequal.** Methods that fit parameters give up a training window and
-   score 1,755 days against the baselines' 2,355. Each is compared to a benchmark on its own
-   sample, so no individual comparison is biased — but ranking a fitted method against a baseline
-   is not quite like-for-like. A common-window re-run is the clean version.
+3. **The common window is a shorter sample.** Aligning every method costs 600 days and drops
+   2015–2018 entirely, so the comparison is now like-for-like but rests on a single market era
+   containing one true crisis. `--common-window` is opt-in; without it each method is scored on
+   its own span, which is what the earlier numbers used.
 4. **The mechanism is unexplained.** The one survivor is the least stable estimator in the panel,
    and the obvious confound was tested and rejected. That is an open question, not a result.
 
@@ -393,8 +402,7 @@ now dominates; raising `refit_every` in the config is the lever if that matters.
 - **decision value** (tier 4): calibration gain vs a volatility-only benchmark, Diebold-Mariano
   with Newey-West errors, flip-rate control, Benjamini-Hochberg FDR and a deflated bar
 
-Outstanding: the full cross-asset grid under deflation, and a common-window re-run so every
-method is scored on identical dates.
+Outstanding: the full cross-asset grid under deflation.
 
 First recovery results, 8 simulated markets × 2,500 days — the speed/false-alarm frontier is
 already explicit, and no method is close to solved:
@@ -488,7 +496,7 @@ tuning has to happen in-fold against a pre-committed criterion.
 > and averaging over six markets it fell to 0.459. One market is one draw. The multi-seed design
 > caught an over-claim that a single-seed run would have published.
 
-Next: the full method × asset grid under deflation, and a common-window re-run.
+Next: the full method × asset grid under deflation.
 
 ## Honest notes
 

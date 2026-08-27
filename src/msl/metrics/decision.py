@@ -120,12 +120,27 @@ def _walk_forward_proba(X: np.ndarray, y: np.ndarray, n_splits: int, gap: int) -
     return proba
 
 
+def scored_index(states: pd.DataFrame, features: pd.DataFrame,
+                 horizon: int = 5, control_instability: bool = False) -> pd.Index:
+    """The dates this estimator would actually be scored on.
+
+    Methods that fit parameters surrender a training window, so each estimator has a
+    different usable span. Intersecting this across a panel is what makes a
+    cross-method ranking like-for-like rather than a comparison of different periods.
+    """
+    parts = [features[BASE_FEATURES], states[PROB_COLUMNS], build_targets(features, horizon)]
+    if control_instability:
+        parts.append(instability(states).rename("flip_rate"))
+    return pd.concat(parts, axis=1).dropna().index
+
+
 def calibration_gain(
     states: pd.DataFrame,
     features: pd.DataFrame,
     horizon: int = 5,
     n_splits: int = 5,
     control_instability: bool = False,
+    common_index: pd.Index | None = None,
 ) -> pd.DataFrame:
     """Brier/log-loss for baseline vs state-augmented forecasts, per target.
 
@@ -136,6 +151,10 @@ def calibration_gain(
     `control_instability=True` adds the estimator's own rolling flip rate to **both**
     models, so the baseline already sees how much the state has been oscillating. Any
     remaining gain cannot be instability-as-volatility-proxy.
+
+    `common_index` restricts scoring to a shared set of dates. Without it, a fitted
+    method is compared to its own benchmark over a shorter span than a baseline gets —
+    each comparison is internally fair, but the *ranking across methods* is not.
     """
     targets = build_targets(features, horizon)
     base_cols = list(BASE_FEATURES)
@@ -144,6 +163,8 @@ def calibration_gain(
         parts.append(instability(states).rename("flip_rate"))
         base_cols = base_cols + ["flip_rate"]
     df = pd.concat(parts, axis=1).dropna()
+    if common_index is not None:
+        df = df.loc[df.index.intersection(common_index)]
     if len(df) < 300:
         return pd.DataFrame()
 
@@ -239,6 +260,7 @@ def risk_control(
     target_vol: float = 0.10,
     max_leverage: float = 2.0,
     cost_bps: float = 2.0,
+    common_index: pd.Index | None = None,
 ) -> pd.DataFrame:
     """Volatility targeting with and without a state overlay.
 
@@ -248,6 +270,8 @@ def risk_control(
     control rather than a disguised return-timing bet.
     """
     df = pd.concat([features[["ret", "rv20"]], states[PROB_COLUMNS]], axis=1).dropna()
+    if common_index is not None:
+        df = df.loc[df.index.intersection(common_index)]
     if len(df) < 300:
         return pd.DataFrame()
 

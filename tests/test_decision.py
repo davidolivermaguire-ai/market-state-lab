@@ -82,3 +82,33 @@ def test_perfect_foresight_state_beats_baseline(setup) -> None:
     out = calibration_gain(oracle, feats, horizon=5)
     direction = out[out["target"] == "direction"].iloc[0]
     assert direction["brier_delta"] < 0, "oracle state failed to improve calibration"
+
+
+def test_common_window_gives_every_method_identical_dates():
+    """The whole point of --common-window: no method sees a date another does not.
+
+    Without this, a fitted estimator is scored on a shorter, later span than a
+    baseline, so the cross-method ranking partly reflects which period each saw.
+    """
+    from msl.features.core import build_features
+    from msl.engine.walkforward import run_estimator
+    from msl.estimators.base import get_estimator
+    from msl.metrics.decision import scored_index
+
+    px, _ = make_regime_series(n=1600, seed=3)
+    feats = build_features(px)
+    names = ["ma_cross", "ewma_slope", "cusum"]
+    spans = {}
+    for n in names:
+        st = run_estimator(feats, get_estimator(n), min_train=400, warmup=400, max_train=600)
+        spans[n] = scored_index(st, feats, horizon=5, control_instability=True)
+
+    # the spans genuinely differ - otherwise this test proves nothing
+    assert len({len(s) for s in spans.values()}) > 1, "expected unequal spans to align"
+
+    common = spans[names[0]]
+    for s in spans.values():
+        common = common.intersection(s)
+    assert len(common) > 0
+    for n, s in spans.items():
+        assert common.difference(s).empty, f"{n} is missing dates in the common window"
