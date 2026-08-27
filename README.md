@@ -535,10 +535,35 @@ Next: the full method × asset grid under deflation.
 - Everything in this repo is **filtered, never smoothed**: the estimate at time *t* uses only data
   up to *t*, asserted by `tests/test_no_lookahead.py` rather than by inspection.
 
+## RQ2: is a factored state better than one label?
+
+`src/msl/factored/` tests the proposal's **RQ2/H1** at **matched cardinality** — a 3×3 factored
+state and a flat 9-state label describe the same nine joint cells, so neither is more expressive
+and only the price differs:
+
+| | joint cells | free parameters |
+|---|---:|---:|
+| factored 3×3 (two independent chains) | 9 | 24 |
+| flat 9-state (one joint chain) | 9 | 108 |
+
+Compare a big factored model against a small flat one and you learn about model size, not about
+factoring. At matched cardinality the question is sharp: does the four-fold parameter saving beat
+the false independence assumption? On three indices, nine head-to-head comparisons, bar |t| > 2.10:
+
+- **factored wins 5 of 9, the flat label wins 0** — the loss target replicates on all three assets
+- **stability does not replicate**: factored is more persistent on 1 of 3 assets, so H1's first
+  claim is unsupported
+- **both lose to no state at all**: 18 of 18 comparisons are worse than the volatility-only baseline
+
+Same conclusion as RQ1 from a different angle. Factoring is the better way to build a state
+representation and still not a reason to condition on one.
+
 ## Results write-up
 
-The tier-4 findings are written up in full, with every parameter stated, at
-[davidmaguire.ai/quant-lab/state-decision-value](https://davidmaguire.ai/quant-lab/state-decision-value/).
+Both experiments are written up in full, with every parameter stated:
+
+- [RQ1 — is a market-state estimate worth anything?](https://davidmaguire.ai/quant-lab/state-decision-value/)
+- [RQ2/H1 — is a factored state better than one label?](https://davidmaguire.ai/quant-lab/factored-vs-flat-state/)
 
 ## License
 
