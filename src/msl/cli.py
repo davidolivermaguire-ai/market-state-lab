@@ -16,9 +16,15 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from msl.data.loaders import _repo_root, load_universe
+from msl.data.loaders import _repo_root, load_prices, load_universe
 from msl.engine.walkforward import run_sweep, state_summary
 from msl.estimators.base import list_estimators
+from msl.features.core import build_features
+
+# Not specialists: these carry no state estimate to be redundant *with*. `always_range`
+# is a constant and `return_sign` is the raw observation, so including either in a
+# consensus would dilute it with something that is not an opinion.
+BASELINE_METHODS = frozenset({"always_range", "return_sign"})
 
 
 def _find_config(p: str) -> Path:
@@ -302,6 +308,65 @@ def cmd_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_redundancy(args: argparse.Namespace) -> int:
+    """Are the specialists independent dimensions, or independent noise?
+
+    Effective-n alone cannot answer this: noisy measurements of one dimension decorrelate
+    exactly like genuinely different dimensions. So the panel is split into what the
+    specialists agree on and where each departs from that, and both are scored.
+    """
+    import pandas as pd
+
+    from msl.diagnostics.redundancy import redundancy_gate, verdict
+
+    res = pd.read_parquet(args.results)
+    if args.start:
+        res = res[res["date"] >= args.start]
+    methods = [m for m in sorted(res["method"].unique()) if m not in BASELINE_METHODS]
+    symbols = args.symbols or sorted(res["symbol"].unique())
+
+    print("=== specialist redundancy gate ===")
+    print(f"  {len(methods)} specialists: {', '.join(methods)}")
+    frames = []
+    for sym in symbols:
+        sig = (res[(res.symbol == sym) & (res.method.isin(methods))]
+               .pivot_table(index="date", columns="method", values="score"))
+        try:
+            px = load_prices(sym, args.start, allow_download=not args.offline)
+        except Exception as exc:
+            print(f"  {sym}: skipped ({exc})")
+            continue
+        feats = build_features(px)
+        gate, dec = redundancy_gate(sig.reindex(feats.index), feats, horizon=args.horizon)
+        if gate.empty:
+            print(f"  {sym}: too few scored rows")
+            continue
+        gate.insert(0, "symbol", sym)
+        frames.append(gate)
+        print(f"  {sym:<8} effective_n = {dec.effective_n:.2f} of {sig.shape[1]}"
+              f"   (a count, not evidence — see msl.diagnostics.redundancy)")
+        for n in dec.notes:
+            if "negative loading" in n:
+                print(f"    [warn] {n}")
+    if not frames:
+        return 1
+
+    g = pd.concat(frames, ignore_index=True)
+    one = g[g.n_features == 1]
+    print("\n  t-statistic vs a volatility-only baseline (negative = the feature helped)")
+    print(one.pivot_table(index="variant", columns=["symbol", "target"],
+                          values="t_stat").round(2).to_string())
+    v = verdict(g)
+    print(f"\n  {v['comparisons']} comparisons -> deflated bar |t| > {v['deflated_bar']:.2f}")
+    print(f"  consensus clears it {v['consensus_wins']}x (best t = {v['best_consensus_t']:.2f})")
+    print(f"  deviations clear it {v['idiosyncratic_wins']}x (best t = {v['best_idio_t']:.2f})")
+    print(f"\n  VERDICT: {v['verdict']}")
+    if args.out:
+        g.to_parquet(args.out)
+        print(f"\n  wrote {args.out}")
+    return 0
+
+
 def cmd_list(_: argparse.Namespace) -> int:
     print("registered estimators:")
     for n in list_estimators():
@@ -365,6 +430,17 @@ def main(argv: list[str] | None = None) -> int:
     da.add_argument("--offline", action="store_true", help="never download")
     da.add_argument("--refresh", action="store_true", help="skip committed CSVs and download")
     da.set_defaults(func=cmd_data)
+
+    rd = sub.add_parser("redundancy",
+                        help="are the specialists independent dimensions, or independent noise?")
+    rd.add_argument("--results", default="results/trend_mixed.parquet",
+                    help="tidy sweep output holding per-method scores")
+    rd.add_argument("--symbols", nargs="*", help="default: every symbol in the results")
+    rd.add_argument("--start", default="2015-01-01")
+    rd.add_argument("--horizon", type=int, default=5)
+    rd.add_argument("--offline", action="store_true", help="never download")
+    rd.add_argument("--out", help="write the full grid to this parquet path")
+    rd.set_defaults(func=cmd_redundancy)
 
     sub.add_parser("list", help="list registered estimators").set_defaults(func=cmd_list)
 

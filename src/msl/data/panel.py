@@ -42,6 +42,7 @@ class Panel:
     how: str
     coverage: pd.DataFrame              # per symbol: own bars, kept, dropped
     notes: list[str] = field(default_factory=list)
+    alignment: dict = field(default_factory=dict)   # where bars were lost, and to whom
 
     @property
     def symbols(self) -> list[str]:
@@ -58,6 +59,84 @@ class Panel:
         span = f"{self.index.min().date()}..{self.index.max().date()}" if len(self) else "empty"
         return (f"Panel({len(self.symbols)} symbols, {len(self)} {self.interval.label} bars, "
                 f"{span}, how={self.how!r})")
+
+
+def _alignment_breakdown(own: dict[str, pd.DatetimeIndex],
+                         idx: pd.DatetimeIndex) -> tuple[dict, list[str]]:
+    """Split the cost of intersecting into edge loss and interior loss.
+
+    A single "alignment cost N bars" number invites the wrong response. The three ways
+    a bar can be lost have nothing in common:
+
+    * **trailing** — one symbol stops early, so the whole panel is truncated to its last
+      date. Almost always staleness: a frozen CSV or an unrefreshed cache. Fully
+      recoverable, and reporting it as a calendar cost hides that.
+    * **leading** — one symbol starts late, so the panel starts late. Short history.
+      Recoverable only by dropping that symbol or accepting the later start.
+    * **interior** — dates inside the common span that some symbol did not trade.
+      Genuine calendar disagreement: holidays, halts, suspensions. Unavoidable if every
+      observation must be simultaneous — and the only kind that can bias a sample, since
+      a halt is likelier on a violent day than a calm one.
+
+    The first two are bugs wearing a methodology costume. Only the third is a real cost.
+    """
+    live = {s: i for s, i in own.items() if len(i)}
+    if not live:
+        return {}, []
+    all_dates = None
+    for i in live.values():
+        all_dates = i if all_dates is None else all_dates.union(i)
+
+    starts = {s: i.min() for s, i in live.items()}
+    ends = {s: i.max() for s, i in live.items()}
+    panel_start, panel_end = max(starts.values()), min(ends.values())
+
+    leading = all_dates[all_dates < panel_start]
+    trailing = all_dates[all_dates > panel_end]
+    inside = all_dates[(all_dates >= panel_start) & (all_dates <= panel_end)]
+    interior = inside.difference(idx)
+
+    late = sorted(s for s, v in starts.items() if v == panel_start)
+    early = sorted(s for s, v in ends.items() if v == panel_end)
+    # who is absent on the interior dates — the symbol whose calendar actually disagrees
+    blame: dict[str, int] = {}
+    if len(interior):
+        for s, i in live.items():
+            n = len(interior.difference(i))
+            if n:
+                blame[s] = n
+
+    info = {
+        "available": len(all_dates), "kept": len(idx),
+        "leading": len(leading), "trailing": len(trailing), "interior": len(interior),
+        "panel_start": panel_start, "panel_end": panel_end,
+        "starts_latest": late, "ends_earliest": early, "interior_blame": blame,
+    }
+
+    notes: list[str] = []
+    if len(trailing):
+        newest = max(ends.values())
+        notes.append(
+            f"{len(trailing)} bars lost at the END: {', '.join(early)} stops at "
+            f"{panel_end.date()} while other symbols reach {newest.date()}. This is "
+            f"staleness, not calendar disagreement — a refresh recovers every one of them.")
+    if len(leading):
+        oldest = min(starts.values())
+        notes.append(
+            f"{len(leading)} bars lost at the START: {', '.join(late)} only begins "
+            f"{panel_start.date()} while other symbols go back to {oldest.date()}. Short "
+            f"history — drop the symbol or accept the later start; refreshing will not help.")
+    if len(interior):
+        worst = ", ".join(f"{s} ({n})" for s, n in
+                          sorted(blame.items(), key=lambda kv: -kv[1])[:3])
+        notes.append(
+            f"{len(interior)} bars lost INSIDE the common span — genuine calendar "
+            f"disagreement ({worst}). Unavoidable, but not necessarily random: a halt or "
+            f"local holiday is likelier on a violent day, so dropping these dates can bias "
+            f"the sample toward calm.")
+    if not (len(leading) or len(trailing) or len(interior)):
+        notes.append("alignment was free: every symbol trades on exactly the same dates.")
+    return info, notes
 
 
 def load_panel(name_or_symbols: str | list[str], start: str | None = None,
@@ -109,13 +188,17 @@ def load_panel(name_or_symbols: str | list[str], start: str | None = None,
                      "missing_in_panel": int(len(idx) - kept)})
     coverage = pd.DataFrame(rows)
 
+    align: dict = {}
     if how == "intersect":
-        widest = coverage["own_bars"].max()
-        if len(idx) < widest:
-            lost = widest - len(idx)
+        align, align_notes = _alignment_breakdown(own, idx)
+        if align.get("available", 0) > len(idx):
+            lost = align["available"] - len(idx)
             notes.append(
-                f"alignment cost {lost} bars ({lost / widest:.1%} of the longest symbol) — "
-                f"intersecting calendars discards any date not shared by every symbol.")
+                f"alignment cost {lost} of {align['available']} available bars "
+                f"({lost / align['available']:.1%}) — broken down below, because the three "
+                f"causes have different fixes.")
+        notes.extend(align_notes)
+        widest = coverage["own_bars"].max()
         thin = coverage[coverage["own_bars"] < min_coverage * widest]
         for _, r in thin.iterrows():
             notes.append(
@@ -130,7 +213,7 @@ def load_panel(name_or_symbols: str | list[str], start: str | None = None,
 
     notes.append("no forward-fill: a padded price would produce a fake zero return and "
                  "bias correlation and volatility downward.")
-    return Panel(aligned, ret, iv, how, coverage, notes)
+    return Panel(aligned, ret, iv, how, coverage, notes, align)
 
 
 # ------------------------------------------------------------------ cross-asset features

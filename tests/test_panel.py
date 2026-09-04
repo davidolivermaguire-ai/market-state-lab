@@ -109,3 +109,56 @@ def test_dispersion_is_cross_sectional_not_temporal():
     assert len(d) == len(p.returns)
     row = p.returns.iloc[100]
     assert np.isclose(d.iloc[100], row.std(ddof=1))
+
+
+# ------------------------------------------------------- alignment loss is not one thing
+def _breakdown(own):
+    from msl.data.panel import _alignment_breakdown
+    idx = None
+    for i in own.values():
+        idx = i if idx is None else idx.intersection(i)
+    return _alignment_breakdown(own, pd.DatetimeIndex(sorted(idx)))
+
+
+def test_stale_symbol_is_reported_as_staleness_not_calendar_disagreement():
+    """The real NAS100 case: a frozen CSV truncates the panel and must say so.
+
+    Calling this a calendar cost invites accepting it. It is one refresh away from zero.
+    """
+    full = pd.bdate_range("2020-01-01", periods=300)
+    own = {"FRESH": full, "OTHER": full, "STALE": full[:265]}
+    info, notes = _breakdown(own)
+    assert info["trailing"] == 35
+    assert info["leading"] == 0 and info["interior"] == 0, "loss is all at the end"
+    assert info["ends_earliest"] == ["STALE"]
+    joined = " ".join(notes)
+    assert "staleness" in joined and "STALE" in joined
+    assert "refresh recovers" in joined
+
+
+def test_short_history_is_reported_as_leading_loss():
+    full = pd.bdate_range("2020-01-01", periods=300)
+    own = {"LONG": full, "NEW": full[40:]}
+    info, notes = _breakdown(own)
+    assert info["leading"] == 40 and info["trailing"] == 0 and info["interior"] == 0
+    assert info["starts_latest"] == ["NEW"]
+    assert "will not help" in " ".join(notes), "a refresh cannot fix a short history"
+
+
+def test_interior_gaps_are_the_only_unavoidable_loss_and_name_the_culprit():
+    full = pd.bdate_range("2020-01-01", periods=300)
+    holiday = full.delete([100, 101, 102])
+    own = {"A": full, "B": full, "C": holiday}
+    info, notes = _breakdown(own)
+    assert info["interior"] == 3 and info["leading"] == 0 and info["trailing"] == 0
+    assert info["interior_blame"] == {"C": 3}
+    joined = " ".join(notes)
+    assert "INSIDE" in joined and "C (3)" in joined
+    assert "bias" in joined, "non-random missingness must be flagged, not just counted"
+
+
+def test_identical_calendars_cost_nothing_and_say_so():
+    full = pd.bdate_range("2020-01-01", periods=200)
+    info, notes = _breakdown({"A": full, "B": full})
+    assert (info["leading"], info["trailing"], info["interior"]) == (0, 0, 0)
+    assert "free" in " ".join(notes)

@@ -135,7 +135,10 @@ clock and reports what that cost:
 
 ```
 Panel(7 symbols, 2892 daily bars, 2015-01-02..2026-07-06, how='intersect')
-  alignment cost 35 bars (1.2% of the longest symbol)
+  alignment cost 35 of 2927 available bars (1.2%)
+  35 bars lost at the END: NAS100 stops at 2026-07-06 while other symbols reach
+  2026-08-24. This is staleness, not calendar disagreement — a refresh recovers
+  every one of them.
   cross-asset features: avg_corr, dispersion, absorption, breadth
 ```
 
@@ -146,9 +149,22 @@ and flatten every dependence model downstream, while the frame looks complete an
 `how="union"` leaves NaN so a caller must decide knowingly; `how="intersect"` (default)
 keeps only genuinely simultaneous observations.
 
-Alignment is also a choice with a cost, so the panel reports it rather than shrinking
-silently. If missingness correlates with market events — a halt, a local holiday during a
-selloff — the discarding is not random, and you should know how much was discarded.
+**Alignment loss is not one thing, so it is not reported as one number.** A single
+"alignment cost N bars" invites the wrong response — shrugging at an unavoidable
+methodological cost. The three ways a bar dies have nothing in common:
+
+| loss | cause | fix |
+|---|---|---|
+| **trailing** | a symbol stops early and truncates the whole panel | refresh it — fully recoverable |
+| **leading** | a symbol starts late | drop it, or accept the later start |
+| **interior** | a date inside the common span some symbol did not trade | none; genuinely unavoidable |
+
+The first two are bugs wearing a methodology costume. In the run above, all 35 lost bars
+are trailing — a committed CSV frozen at 2026-07-06 discarding seven weeks from six other
+symbols — and none are calendar disagreement at all. Only interior loss is a real cost, and
+only interior loss can bias a sample: a halt or local holiday is likelier on a violent day
+than a calm one, so dropping those dates tilts the sample toward calm. The panel names the
+symbol responsible in each case.
 
 The four cross-asset features are causal by construction and asserted so in
 `tests/test_panel.py`: recomputing them on a truncated series must reproduce the original
@@ -160,6 +176,36 @@ values exactly.
 | `dispersion` | cross-sectional spread — high is idiosyncratic, low is macro-driven |
 | `absorption` | share of variance in the leading eigenvector (Kritzman et al.) — systemic fragility |
 | `breadth` | fraction of the panel up on the day |
+
+### The redundancy gate
+
+```bash
+msl redundancy --symbols NAS100 US500 US30
+```
+
+The architecture assumes a council of specialists covering *different* dimensions. If they
+all measure one thing, their disagreement is noise and the aggregation step has nothing to
+aggregate. The obvious check is the effective number of independent signals:
+
+$$N_{\text{eff}} = \frac{(\sum_i \lambda_i)^2}{\sum_i \lambda_i^2}$$
+
+On the seven non-baseline estimators this returns **3.8 of 7** — apparently healthy.
+**It is not sufficient, and reading it as sufficient is the trap this module closes.**
+Effective-n cannot separate two situations that imply opposite build orders:
+
+- **different dimensions** — seven estimators measuring seven things decorrelate;
+- **one dimension, measured noisily** — seven noisy estimates of the *same* quantity also
+  decorrelate, because measurement error is independent even when the target is shared.
+  Here a *higher* effective-n means *worse* estimators.
+
+`tests/test_redundancy.py` demonstrates the second case directly: hold the underlying
+signal fixed, raise the noise, and effective-n climbs from 1.2 to above 4.
+
+So the gate splits the panel into what the specialists **agree** on and where each one
+**deviates**, and scores both against the same volatility-only baseline and the same
+purged walk-forward machinery as the decision-value work. The decomposition is the fragile
+part — a full-sample standardisation would leak the future into the consensus — so it uses
+trailing windows only, asserted by recomputing on a truncated series.
 
 ## The two contracts
 
