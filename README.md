@@ -41,6 +41,7 @@ pip install -e ".[data,dev]"      # 'data' adds yfinance + parquet, 'dev' adds p
 
 msl data --catalogue                  # every symbol, universe and interval this knows
 msl data --symbols mixed --start 2015-01-01   # pre-flight: coverage, provenance, alignment
+msl data --symbols mixed --panel              # + the aligned cross-asset panel
 msl list                              # registered estimators
 msl run      -c configs/trend_indices.yaml        # walk-forward sweep -> tidy results
 msl recovery                                      # tier-1 scoring on synthetic markets
@@ -123,6 +124,42 @@ feature layer now reads the frame's own calendar, and modules that still assume 
 Weekly bars are right-labelled, so a bar's content always ends at or before its label — safe for
 causality, asserted in `tests/test_data_layer.py`. A trailing partial bar can be stamped after the
 last real observation, so the audit reports the true data end and flags it.
+
+### The cross-asset panel
+
+`load_universe` returns independent frames, which is fine per asset and useless for
+anything needing assets *together* — correlation, dispersion, absorption, DCC. Those are
+exactly the Step 2 specialists that cover dimensions a trend estimator cannot, which is
+why every estimator built so far measures the same thing. `load_panel` puts symbols on one
+clock and reports what that cost:
+
+```
+Panel(7 symbols, 2892 daily bars, 2015-01-02..2026-07-06, how='intersect')
+  alignment cost 35 bars (1.2% of the longest symbol)
+  cross-asset features: avg_corr, dispersion, absorption, breadth
+```
+
+**It never forward-fills, and that is the whole point.** Assets trade on different
+calendars, and the obvious fix — reindex to a union and pad — creates a *fake zero return*
+on every padded day. Zeros bias realised volatility down, bias pairwise correlation down,
+and flatten every dependence model downstream, while the frame looks complete and healthy.
+`how="union"` leaves NaN so a caller must decide knowingly; `how="intersect"` (default)
+keeps only genuinely simultaneous observations.
+
+Alignment is also a choice with a cost, so the panel reports it rather than shrinking
+silently. If missingness correlates with market events — a halt, a local holiday during a
+selloff — the discarding is not random, and you should know how much was discarded.
+
+The four cross-asset features are causal by construction and asserted so in
+`tests/test_panel.py`: recomputing them on a truncated series must reproduce the original
+values exactly.
+
+| feature | what it sees that a single asset cannot |
+|---|---|
+| `avg_corr` | mean pairwise correlation — rises toward 1 when everything sells off together |
+| `dispersion` | cross-sectional spread — high is idiosyncratic, low is macro-driven |
+| `absorption` | share of variance in the leading eigenvector (Kritzman et al.) — systemic fragility |
+| `breadth` | fraction of the panel up on the day |
 
 ## The two contracts
 

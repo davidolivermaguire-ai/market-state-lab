@@ -278,6 +278,21 @@ def cmd_data(args: argparse.Namespace) -> int:
           f"deflated bar |t| > {sp['deflated_bar']:.2f}")
     print("  (add a second interval and that bar rises — count it before you run, not after)")
 
+    if args.panel:
+        from msl.data.panel import cross_asset_features, load_panel
+        print(f"\n=== cross-asset panel (how={args.how}) ===")
+        p = load_panel(syms, args.start, args.end, iv, how=args.how,
+                       allow_download=not args.offline, prefer_fresh=args.refresh)
+        print(f"  {p}")
+        print(p.coverage.to_string(index=False))
+        caf = cross_asset_features(p)
+        ready = caf.dropna()
+        print(f"\n  cross-asset features: {', '.join(caf.columns)}")
+        print(f"  usable from {ready.index.min().date() if len(ready) else 'n/a'} "
+              f"({len(ready)} of {len(caf)} bars once windows fill)")
+        if len(ready):
+            print(ready.tail(3).round(4).to_string())
+        warnings = list(warnings) + p.notes
     if warnings:
         print("\n  WARNINGS")
         for w in warnings:
@@ -343,6 +358,10 @@ def main(argv: list[str] | None = None) -> int:
     da.add_argument("--methods", type=int, default=8,
                     help="methods you intend to run, for the search-space estimate")
     da.add_argument("--targets", type=int, default=3, help="targets, for the search-space estimate")
+    da.add_argument("--panel", action="store_true",
+                    help="also build the aligned cross-asset panel and show what alignment cost")
+    da.add_argument("--how", default="intersect", choices=["intersect", "union"],
+                    help="panel alignment: intersect (shared dates) or union (NaN, never padded)")
     da.add_argument("--offline", action="store_true", help="never download")
     da.add_argument("--refresh", action="store_true", help="skip committed CSVs and download")
     da.set_defaults(func=cmd_data)
