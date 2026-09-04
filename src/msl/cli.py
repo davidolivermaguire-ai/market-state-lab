@@ -238,6 +238,55 @@ def cmd_decision(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_data(args: argparse.Namespace) -> int:
+    """Step 1 visibility: what will I load, from where, and is it comparable?"""
+    from msl.data.audit import audit, search_space
+    from msl.data.calendar import INTERVALS, get_interval
+    from msl.data.symbols import UNIVERSES, catalogue
+
+    if args.catalogue:
+        print("\n=== symbol registry ===")
+        with pd.option_context("display.width", 170, "display.max_colwidth", 46):
+            print(catalogue().to_string(index=False))
+        print("\n=== universes ===")
+        for u, m in UNIVERSES.items():
+            print(f"  {u:<14} {len(m)} symbols: {', '.join(m)}")
+        print("\n=== intervals ===")
+        for k, iv in INTERVALS.items():
+            print(f"  {k:<5} {iv.label:<8} {iv.periods_per_year:>6.0f} periods/yr  "
+                  f"annualisation x{iv.ann:.2f}")
+        return 0
+
+    if not args.symbols:
+        print("give --symbols (a universe name or a list), or --catalogue")
+        return 2
+
+    syms = args.symbols[0] if len(args.symbols) == 1 and args.symbols[0] in UNIVERSES \
+        else args.symbols
+    iv = get_interval(args.interval)
+    print(f"\n=== data audit — {iv.label} bars ({iv.periods_per_year:.0f}/yr, "
+          f"annualisation x{iv.ann:.2f}) ===")
+    rep, warnings = audit(syms, args.start, args.end, iv,
+                          allow_download=not args.offline, prefer_fresh=args.refresh)
+    with pd.option_context("display.width", 190, "display.max_columns", 20):
+        print(rep.to_string(index=False))
+
+    n_sym = int((rep["status"] == "ok").sum()) if "status" in rep else len(rep)
+    sp = search_space(n_sym, 1, args.methods, args.targets)
+    print(f"\n  search space if you run {args.methods} methods x {args.targets} targets "
+          f"on these {n_sym} symbols: {sp['comparisons']} comparisons, "
+          f"deflated bar |t| > {sp['deflated_bar']:.2f}")
+    print("  (add a second interval and that bar rises — count it before you run, not after)")
+
+    if warnings:
+        print("\n  WARNINGS")
+        for w in warnings:
+            print(f"    - {w}")
+    else:
+        print("\n  no warnings: registered, aligned, single provenance.")
+    return 0
+
+
 def cmd_list(_: argparse.Namespace) -> int:
     print("registered estimators:")
     for n in list_estimators():
@@ -282,6 +331,21 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--offline", action="store_true", help="never download; committed CSVs only")
     d.add_argument("--refresh", action="store_true", help="skip committed CSVs and download")
     d.set_defaults(func=cmd_decision)
+
+    da = sub.add_parser("data", help="inspect symbols, intervals and data quality before a run")
+    da.add_argument("--symbols", nargs="*", default=None,
+                    help="a universe name (indices, mixed, ...) or an explicit symbol list")
+    da.add_argument("--interval", default="1d", help="bar interval: 1d or 1wk (default 1d)")
+    da.add_argument("--start", default=None)
+    da.add_argument("--end", default=None)
+    da.add_argument("--catalogue", action="store_true",
+                    help="list every known symbol, universe and interval, then exit")
+    da.add_argument("--methods", type=int, default=8,
+                    help="methods you intend to run, for the search-space estimate")
+    da.add_argument("--targets", type=int, default=3, help="targets, for the search-space estimate")
+    da.add_argument("--offline", action="store_true", help="never download")
+    da.add_argument("--refresh", action="store_true", help="skip committed CSVs and download")
+    da.set_defaults(func=cmd_data)
 
     sub.add_parser("list", help="list registered estimators").set_defaults(func=cmd_list)
 

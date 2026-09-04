@@ -18,11 +18,21 @@ FEATURE_COLUMNS = [
     "ma_spread", "range", "gap", "volz", "amihud",
 ]
 
-ANN = np.sqrt(252.0)
+ANN = np.sqrt(252.0)   # daily default, kept for callers that pass bare frames
 
 
 def build_features(px: pd.DataFrame) -> pd.DataFrame:
-    """Daily OHLCV -> the shared causal feature frame (plus `close` for reference)."""
+    """OHLCV -> the shared causal feature frame (plus `close` for reference).
+
+    Annualisation follows the frame's own interval. A weekly frame carries 52
+    periods/year, so `rv20` means "20 weeks, annualised at sqrt(52)" — using the daily
+    sqrt(252) there would inflate every volatility by sqrt(4.8) while looking perfectly
+    reasonable. Frames loaded by `msl.data` are stamped; a bare frame is assumed daily.
+    """
+    from msl.data.calendar import interval_of
+
+    iv = interval_of(px)
+    ann = iv.ann
     c, h, l, o = px["Close"], px["High"], px["Low"], px["Open"]
     v = px["Volume"].astype(float)
     r = np.log(c).diff()
@@ -30,9 +40,9 @@ def build_features(px: pd.DataFrame) -> pd.DataFrame:
     f = pd.DataFrame(index=px.index)
     f["ret"] = r
     # realised volatility over three horizons: the transparent state signal
-    f["rv5"] = r.rolling(5).std() * ANN
-    f["rv20"] = r.rolling(20).std() * ANN
-    f["rv60"] = r.rolling(60).std() * ANN
+    f["rv5"] = r.rolling(5).std() * ann
+    f["rv20"] = r.rolling(20).std() * ann
+    f["rv60"] = r.rolling(60).std() * ann
     # trend / momentum
     f["mom20"] = np.log(c / c.shift(20))
     f["mom60"] = np.log(c / c.shift(60))
@@ -45,6 +55,9 @@ def build_features(px: pd.DataFrame) -> pd.DataFrame:
     f["amihud"] = r.abs() / (v / v.rolling(20).mean())
 
     f["close"] = c
+    # carry the calendar forward so estimators and metrics inherit it
+    f.attrs["interval"] = iv.key
+    f.attrs["periods_per_year"] = iv.periods_per_year
     return f
 
 

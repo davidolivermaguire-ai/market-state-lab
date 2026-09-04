@@ -39,6 +39,8 @@ panel, and **agreement of the ranking across assets** is the actual evidence for
 ```bash
 pip install -e ".[data,dev]"      # 'data' adds yfinance + parquet, 'dev' adds pytest
 
+msl data --catalogue                  # every symbol, universe and interval this knows
+msl data --symbols mixed --start 2015-01-01   # pre-flight: coverage, provenance, alignment
 msl list                              # registered estimators
 msl run      -c configs/trend_indices.yaml        # walk-forward sweep -> tidy results
 msl recovery                                      # tier-1 scoring on synthetic markets
@@ -78,6 +80,49 @@ prices = load_universe(["NAS100", "US500", "US30", "AAPL"], start="2010-01-01")
 results = run_sweep(prices, ["ma_cross", "return_sign", "ewma_slope"])
 print(state_summary(results))
 ```
+
+## Step 1: knowing what you loaded
+
+Three published-number problems here came from not knowing what had actually been loaded: a
+committed CSV frozen at 2026-07-06 sitting beside a cache holding 2026-08-24; a panel that ran
+2010–2026 while the write-up said 2015–2026; symbols carrying different as-of dates. All three
+were found *after* publishing. `msl data` turns them into a pre-flight check:
+
+```
+symbol ticker class        source  bars      first       last  years  gaps status
+NAS100   ^NDX index committed CSV  2892 2015-01-02 2026-07-06   11.5     0     ok
+ US500  ^GSPC index         cache  2927 2015-01-02 2026-08-24   11.6     0     ok
+
+  search space if you run 8 methods x 3 targets on these 7 symbols:
+  168 comparisons, deflated bar |t| > 3.20
+
+  WARNINGS
+    - as-of dates span 49 days — this panel is NOT like-for-like. Behind: NAS100.
+    - mixed provenance ['cache', 'committed CSV'] — committed CSVs are frozen at
+      their publication date, so mixing them with downloads compares different days.
+```
+
+The search-space line is deliberate. Every dimension you add multiplies the chances of finding
+something, and this project has repeatedly shown that a bar set for the wrong N manufactures
+results. The count belongs *before* the run, not in a footnote afterwards.
+
+**Intervals.** `--interval 1d` (default) or `1wk`. Coarser bars are aggregated from daily rather
+than re-downloaded, so a weekly series and its daily parent are guaranteed consistent, and each
+frame is stamped with its calendar:
+
+| interval | periods/yr | annualisation |
+|---|---:|---:|
+| `1d` | 252 | ×15.87 |
+| `1wk` | 52 | ×7.21 |
+
+That stamping is not cosmetic. `sqrt(252)` was hard-coded in eight places; applying it to weekly
+bars would have inflated every volatility by `sqrt(4.8)` while looking entirely plausible. The
+feature layer now reads the frame's own calendar, and modules that still assume daily call
+`require_daily()` and fail loudly rather than returning numbers that are wrong by a constant.
+
+Weekly bars are right-labelled, so a bar's content always ends at or before its label — safe for
+causality, asserted in `tests/test_data_layer.py`. A trailing partial bar can be stamped after the
+last real observation, so the audit reports the true data end and flags it.
 
 ## The two contracts
 

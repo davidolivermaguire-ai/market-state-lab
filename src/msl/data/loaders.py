@@ -17,9 +17,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from msl.data.symbols import UNIVERSES, resolve
+from msl.data.calendar import Interval, get_interval, resample, stamp
+from msl.data.symbols import expand, resolve
 
 COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
+
+# Where the last load of each symbol came from. The published-numbers bug that
+# motivated this: a committed CSV frozen at 2026-07-06 sat alongside a cache holding
+# 2026-08-24, and nothing said which one a run had used.
+LAST_SOURCE: dict[str, str] = {}
 
 
 def _repo_root() -> Path:
@@ -57,14 +63,21 @@ def load_prices(
     end: str | None = None,
     allow_download: bool = True,
     prefer_fresh: bool = False,
+    interval: str | Interval | None = None,
 ) -> pd.DataFrame:
-    """Daily OHLCV for a friendly symbol name, as a sorted, tidy frame.
+    """OHLCV for a friendly symbol name, as a sorted, tidy frame.
 
     `prefer_fresh=True` skips the committed CSV and downloads. Use it when symbols must
     share a common as-of date: a committed CSV is frozen at the date it was published,
     so mixing it with freshly-downloaded symbols silently compares states at different
     points in time.
+
+    `interval` selects the bar frequency (default daily). Coarser bars are aggregated
+    from daily rather than re-downloaded, so a weekly series and the daily series it
+    came from are guaranteed consistent. The returned frame is stamped with its
+    interval so downstream code annualises with the right number of periods.
     """
+    iv = get_interval(interval)
     key = symbol.upper()
 
     csv = _raw_dir() / f"{key}.csv"
@@ -72,6 +85,7 @@ def load_prices(
         csv = Path("__skip__")
     if csv.exists():
         df = _tidy(pd.read_csv(csv))
+        LAST_SOURCE[key] = "committed CSV"
     else:
         pq = _cache_dir() / f"{key}.parquet"
         cached = None
@@ -84,8 +98,10 @@ def load_prices(
                 cached = None
         if cached is not None:
             df = cached
+            LAST_SOURCE[key] = "cache"
         elif allow_download:
             df = _tidy(_download(key, start, end))
+            LAST_SOURCE[key] = "download"
             _cache_dir().mkdir(parents=True, exist_ok=True)
             try:
                 df.to_parquet(pq)
@@ -97,13 +113,19 @@ def load_prices(
                 f"Put a CSV at {csv} or call with allow_download=True."
             )
 
+    # Trim *before* resampling, so a window boundary cannot be smeared across a
+    # coarser bar and quietly pull in data from outside the requested range.
     if start is not None:
         df = df[df.index >= pd.Timestamp(start)]
     if end is not None:
         df = df[df.index <= pd.Timestamp(end)]
     if df.empty:
         raise ValueError(f"no rows for {key} in the requested window")
-    return df
+
+    df = resample(df, iv)
+    if df.empty:
+        raise ValueError(f"no {iv.label} bars for {key} in the requested window")
+    return stamp(df, iv)
 
 
 def _download(symbol: str, start: str | None, end: str | None) -> pd.DataFrame:
@@ -128,18 +150,19 @@ def load_universe(
     end: str | None = None,
     allow_download: bool = True,
     prefer_fresh: bool = False,
+    interval: str | Interval | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Load a named universe (or an explicit list) as {symbol: prices}.
 
     Symbols that fail to load are skipped with a warning rather than killing a sweep —
     a missing ticker should not cost you the other nine.
     """
-    symbols = UNIVERSES[name_or_symbols] if isinstance(name_or_symbols, str) else list(name_or_symbols)
+    symbols = expand(name_or_symbols)
     out: dict[str, pd.DataFrame] = {}
     for s in symbols:
         try:
             out[s] = load_prices(s, start, end, allow_download=allow_download,
-                                 prefer_fresh=prefer_fresh)
+                                 prefer_fresh=prefer_fresh, interval=interval)
         except Exception as exc:
             print(f"  [warn] skipping {s}: {exc}")
     if not out:
